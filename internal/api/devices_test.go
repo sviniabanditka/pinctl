@@ -1,0 +1,251 @@
+package api
+
+import (
+	"net/http"
+	"testing"
+
+	"github.com/sviniabanditka/pinctl/internal/engine"
+	"github.com/sviniabanditka/pinctl/internal/model"
+)
+
+func newTestServer(t *testing.T) (http.Handler, *fakeSession) {
+	t.Helper()
+	st := newTestStore(t)
+	fs := newFakeSession()
+	mgr := engine.NewManager()
+	t.Cleanup(mgr.StopAll)
+	io := newFakeDeviceIO()
+	h := NewServer(fs, "/dev/ttyACM0", st, mgr, io)
+	return h, fs
+}
+
+func TestCreateDevice(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "Porch LED",
+		"pin":  13,
+		"role": "digital-out",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	var d model.Device
+	mustDecode(t, rec, &d)
+	if d.ID == "" {
+		t.Error("expected an assigned id")
+	}
+	if d.BoardID != defaultBoardID {
+		t.Errorf("boardId = %q, want default %q", d.BoardID, defaultBoardID)
+	}
+	if d.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be set")
+	}
+}
+
+func TestCreateDevice_BadRole(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "X", "pin": 13, "role": "servo",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateDevice_EmptyName(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{
+		"pin": 13, "role": "digital-out",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	er := decodeError(t, rec)
+	if er.Error.Code != "validation_error" {
+		t.Errorf("error code = %q, want validation_error", er.Error.Code)
+	}
+}
+
+func TestCreateDevice_PinConflict(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "LED", "pin": 13, "role": "digital-out",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("first create: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "Another LED", "pin": 13, "role": "digital-out",
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	er := decodeError(t, rec)
+	if er.Error.Code != "conflict" {
+		t.Errorf("error code = %q, want conflict", er.Error.Code)
+	}
+}
+
+func TestCreateDevice_DifferentBoardSamePinOK(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "LED", "pin": 13, "role": "digital-out", "boardId": "brd_a",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	rec = doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "LED2", "pin": 13, "role": "digital-out", "boardId": "brd_b",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (different board, same pin ok); body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetDevice_NotFound(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/devices/dev_doesnotexist", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	er := decodeError(t, rec)
+	if er.Error.Code != "not_found" {
+		t.Errorf("error code = %q, want not_found", er.Error.Code)
+	}
+}
+
+func TestListDevices(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{"name": "A", "pin": 13, "role": "digital-out"})
+	doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{"name": "B", "pin": 14, "role": "analog-in"})
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/devices", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Devices []model.Device `json:"devices"`
+	}
+	mustDecode(t, rec, &resp)
+	if len(resp.Devices) != 2 {
+		t.Fatalf("len(devices) = %d, want 2", len(resp.Devices))
+	}
+}
+
+func TestUpdateDevice_NameAndPin(t *testing.T) {
+	h, fs := newTestServer(t)
+	_ = fs
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{"name": "A", "pin": 13, "role": "digital-out"})
+	var d model.Device
+	mustDecode(t, rec, &d)
+
+	rec = doRequest(t, h, http.MethodPatch, "/api/v1/devices/"+d.ID, map[string]any{"name": "Renamed", "pin": 5})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var updated model.Device
+	mustDecode(t, rec, &updated)
+	if updated.Name != "Renamed" || updated.Pin != 5 {
+		t.Errorf("updated = %+v, want name=Renamed pin=5", updated)
+	}
+	if updated.Role != model.RoleDigitalOut {
+		t.Errorf("role changed unexpectedly to %q", updated.Role)
+	}
+}
+
+func TestUpdateDevice_RoleImmutable(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{"name": "A", "pin": 13, "role": "digital-out"})
+	var d model.Device
+	mustDecode(t, rec, &d)
+
+	rec = doRequest(t, h, http.MethodPatch, "/api/v1/devices/"+d.ID, map[string]any{"role": "analog-in"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateDevice_BoardIDImmutable(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{"name": "A", "pin": 13, "role": "digital-out"})
+	var d model.Device
+	mustDecode(t, rec, &d)
+
+	rec = doRequest(t, h, http.MethodPatch, "/api/v1/devices/"+d.ID, map[string]any{"boardId": "brd_other"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeleteDevice(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{"name": "A", "pin": 13, "role": "digital-out"})
+	var d model.Device
+	mustDecode(t, rec, &d)
+
+	rec = doRequest(t, h, http.MethodDelete, "/api/v1/devices/"+d.ID, nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/devices/"+d.ID, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 after delete", rec.Code)
+	}
+}
+
+// TestDeleteDevice_ReferencedByPipelineConflict covers docs/10-api.md:
+// "DELETE /api/v1/devices/{id} ... 409 if referenced by any pipeline."
+func TestDeleteDevice_ReferencedByPipelineConflict(t *testing.T) {
+	h, _ := newTestServer(t)
+	ldr := createTestDevice(t, h, "LDR", 14, "analog-in")
+	led := createTestDevice(t, h, "LED", 13, "digital-out")
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/pipelines", ldrLedPipelineBody("porch", ldr.ID, led.ID))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create pipeline: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = doRequest(t, h, http.MethodDelete, "/api/v1/devices/"+led.ID, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	er := decodeError(t, rec)
+	if er.Error.Code != "device_in_use" {
+		t.Errorf("error code = %q, want device_in_use", er.Error.Code)
+	}
+
+	// The device must still be gettable (delete was rejected).
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/devices/"+led.ID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (device should still exist); body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCreateDevice_AppliesPinMode confirms the create handler calls
+// boardio.ApplyPinModes against the session (not just persists to store).
+func TestCreateDevice_AppliesPinMode(t *testing.T) {
+	h, fs := newTestServer(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "LDR", "pin": 14, "role": "analog-in",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if fs.lastPin != 14 {
+		t.Errorf("lastPin = %d, want 14 (ApplyPinModes should have set mode on the new device's pin)", fs.lastPin)
+	}
+}
