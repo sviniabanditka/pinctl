@@ -203,6 +203,7 @@ func (s *Server) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.startOrStop(saved, devices)
+	s.publishPipelineStatus(saved.ID, s.pipelineStatus(saved))
 	writeJSON(w, http.StatusCreated, pipelineSaveResponse{Pipeline: saved, Warnings: toWarningsOut(warnings)})
 }
 
@@ -240,16 +241,21 @@ func (s *Server) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.startOrStop(saved, devices)
+	s.publishPipelineStatus(saved.ID, s.pipelineStatus(saved))
 	writeJSON(w, http.StatusOK, pipelineSaveResponse{Pipeline: saved, Warnings: toWarningsOut(warnings)})
 }
 
 func (s *Server) handleDeletePipeline(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	s.mgr.Stop(id)
+	// Remove (not Stop): the pipeline is gone for good, so its debug
+	// snapshotHub should be pruned too, not kept around forever — see
+	// engine.Manager.Remove.
+	s.mgr.Remove(id)
 	if err := s.store.DeletePipeline(id); err != nil {
 		writeStoreError(w, err)
 		return
 	}
+	s.publishPipelineStatus(id, "stopped")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -283,7 +289,9 @@ func (s *Server) handleEnablePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.startOrStop(updated, devices)
-	writeJSON(w, http.StatusOK, pipelineActionResponse{ID: updated.ID, Enabled: updated.Enabled, Status: s.pipelineStatus(updated)})
+	status := s.pipelineStatus(updated)
+	s.publishPipelineStatus(updated.ID, status)
+	writeJSON(w, http.StatusOK, pipelineActionResponse{ID: updated.ID, Enabled: updated.Enabled, Status: status})
 }
 
 func (s *Server) handleDisablePipeline(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +302,9 @@ func (s *Server) handleDisablePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mgr.Stop(id)
-	writeJSON(w, http.StatusOK, pipelineActionResponse{ID: updated.ID, Enabled: updated.Enabled, Status: s.pipelineStatus(updated)})
+	status := s.pipelineStatus(updated)
+	s.publishPipelineStatus(updated.ID, status)
+	writeJSON(w, http.StatusOK, pipelineActionResponse{ID: updated.ID, Enabled: updated.Enabled, Status: status})
 }
 
 // validateResponse is the docs/10-api.md POST /pipelines/validate shape:

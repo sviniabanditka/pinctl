@@ -44,6 +44,7 @@ type runner struct {
 	tickPeriod    time.Duration
 	clock         Clock
 	tickerFactory TickerFactory
+	hub           *snapshotHub
 
 	stopCh   chan struct{}
 	doneCh   chan struct{}
@@ -58,7 +59,10 @@ type runner struct {
 	status   Status
 }
 
-func newRunner(id string, g *Graph, devices map[string]model.Device, io DeviceIO, clock Clock, tf TickerFactory) *runner {
+func newRunner(id string, g *Graph, devices map[string]model.Device, io DeviceIO, clock Clock, tf TickerFactory, hub *snapshotHub) *runner {
+	if hub == nil {
+		hub = newSnapshotHub() // defensive: keeps runner usable standalone in tests that skip the Manager
+	}
 	return &runner{
 		id:            id,
 		graph:         g,
@@ -67,6 +71,7 @@ func newRunner(id string, g *Graph, devices map[string]model.Device, io DeviceIO
 		tickPeriod:    time.Duration(g.TickMs) * time.Millisecond,
 		clock:         clock,
 		tickerFactory: tf,
+		hub:           hub,
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
 		lastWritten:   make(map[string]Value),
@@ -124,8 +129,9 @@ func (r *runner) run() {
 			}
 
 			tickNum++
+			buildSnapshot := r.hub.subscribed()
 			start := r.clock.Now()
-			failedNode, evalErr := r.runTick(TickContext{Tick: tickNum, Now: now})
+			failedNode, evalErr, nodeVals := r.runTick(TickContext{Tick: tickNum, Now: now}, buildSnapshot)
 			dur := r.clock.Now().Sub(start)
 
 			if dur > r.tickPeriod {
@@ -133,6 +139,18 @@ func (r *runner) run() {
 				// instead, per docs/07-pipeline-engine.md "Overrun
 				// handling".
 				skipNext = true
+			}
+
+			if evalErr == nil && buildSnapshot {
+				// Publish is itself a no-op if the last subscriber
+				// unsubscribed between the check above and here; still
+				// cheap (one atomic load) either way.
+				r.hub.publish(&TickSnapshot{
+					PipelineID: r.id,
+					Tick:       tickNum,
+					Duration:   dur,
+					Nodes:      nodeVals,
+				})
 			}
 
 			if evalErr != nil {
@@ -171,9 +189,18 @@ func (r *runner) run() {
 // abandons the tick immediately — no further nodes evaluate and no writes
 // queued so far are flushed — per docs/07-pipeline-engine.md "Runtime
 // error handling".
-func (r *runner) runTick(ctx TickContext) (failedNode string, err error) {
+//
+// When buildSnapshot is false (the common case: nobody is subscribed to
+// this pipeline's debug stream), nodeVals is always nil and no extra
+// allocation happens beyond what evaluation already does — per
+// docs/07-pipeline-engine.md "Debug and observability hooks": "the engine
+// skips building the snapshot's serialized form entirely" when unsubscribed.
+func (r *runner) runTick(ctx TickContext, buildSnapshot bool) (failedNode string, err error, nodeVals map[string]Value) {
 	outputs := make(map[string][]Value, len(r.graph.Order))
 	writeIntents := make(map[string]Value, len(r.graph.Order))
+	if buildSnapshot {
+		nodeVals = make(map[string]Value, len(r.graph.Order))
+	}
 
 	for _, id := range r.graph.Order {
 		n := r.graph.Nodes[id]
@@ -187,9 +214,12 @@ func (r *runner) runTick(ctx TickContext) (failedNode string, err error) {
 
 		out, evalErr := n.impl.Eval(ctx, in)
 		if evalErr != nil {
-			return id, fmt.Errorf("node %s: %w", id, evalErr)
+			return id, fmt.Errorf("node %s: %w", id, evalErr), nil
 		}
 		outputs[id] = out
+		if buildSnapshot {
+			addSnapshotValues(nodeVals, n, out)
+		}
 
 		if sn, ok := n.impl.(sinkNode); ok {
 			deviceID, v := sn.SinkValue()
@@ -217,5 +247,5 @@ func (r *runner) runTick(ctx TickContext) (failedNode string, err error) {
 		r.lastWritten[deviceID] = v
 	}
 
-	return "", nil
+	return "", nil, nodeVals
 }

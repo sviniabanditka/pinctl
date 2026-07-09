@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/sviniabanditka/pinctl/internal/engine"
 	"github.com/sviniabanditka/pinctl/internal/model"
 )
 
@@ -121,4 +122,79 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleWriteDevice is the manual test write from docs/10-api.md: allowed
+// only for output roles and only while no enabled pipeline drives the
+// device (409 otherwise).
+func (s *Server) handleWriteDevice(w http.ResponseWriter, r *http.Request) {
+	d, err := s.store.GetDevice(r.PathValue("id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	var req struct {
+		Value json.RawMessage `json:"value"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Value == nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "body must be {\"value\": bool|number}")
+		return
+	}
+
+	var v engine.Value
+	switch d.Role {
+	case model.RoleDigitalOut:
+		var b bool
+		if err := json.Unmarshal(req.Value, &b); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "digital-out expects a boolean value")
+			return
+		}
+		v = engine.BoolValue(b)
+	case model.RolePWMOut:
+		var f float64
+		if err := json.Unmarshal(req.Value, &f); err != nil || f < 0 || f > 255 {
+			writeError(w, http.StatusBadRequest, "bad_request", "pwm-out expects a number 0-255")
+			return
+		}
+		v = engine.FloatValue(f)
+	default:
+		writeError(w, http.StatusBadRequest, "bad_request", "device role "+string(d.Role)+" is not writable")
+		return
+	}
+
+	if pl := s.enabledPipelineDriving(d.ID); pl != "" {
+		writeError(w, http.StatusConflict, "device_driven_by_pipeline",
+			"device is driven by enabled pipeline "+pl+"; disable it first")
+		return
+	}
+
+	if err := s.io.WriteDevice(d, v); err != nil {
+		writeBoardError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// enabledPipelineDriving returns the ID of an enabled pipeline containing a
+// device-write node targeting deviceID, or "".
+func (s *Server) enabledPipelineDriving(deviceID string) string {
+	for _, p := range s.store.ListPipelines() {
+		if !p.Enabled {
+			continue
+		}
+		for _, n := range p.Nodes {
+			if n.Type != "device-write" {
+				continue
+			}
+			var cfg struct {
+				DeviceID string `json:"deviceId"`
+			}
+			if json.Unmarshal(n.Config, &cfg) == nil && cfg.DeviceID == deviceID {
+				return p.ID
+			}
+		}
+	}
+	return ""
 }

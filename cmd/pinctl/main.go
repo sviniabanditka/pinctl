@@ -78,13 +78,18 @@ func main() {
 		}
 	}
 
+	apiServer := api.NewServer(sess, *port, st, mgr, io)
 	srv := &http.Server{
 		Addr:    *listen,
-		Handler: api.NewServer(sess, *port, st, mgr, io),
+		Handler: apiServer,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// v0.3: boards/devices/pipelines WS topic publishers (docs/10-api.md),
+	// stopped alongside the pipeline engine on shutdown below.
+	stopPublishers := apiServer.StartPublishers(ctx)
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -101,9 +106,14 @@ func main() {
 		log.Print("pinctl: shutting down")
 
 		// Stop every pipeline runner first (no pipeline is interrupted
-		// mid-tick), then the HTTP server; the board session closes via the
-		// deferred sess.Close() above once main returns.
+		// mid-tick), then the WS publishers and every connected WS client
+		// (docs/10-api.md: "the server closes every WebSocket cleanly...
+		// as part of the graceful shutdown sequence"), then the HTTP
+		// server; the board session closes via the deferred sess.Close()
+		// above once main returns.
 		mgr.StopAll()
+		stopPublishers()
+		apiServer.CloseWS()
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

@@ -1,0 +1,240 @@
+:root {
+  color-scheme: light dark;
+
+  --color-bg: #ffffff;
+  --color-bg-alt: #f4f5f7;
+  --color-surface: #ffffff;
+  --color-border: #dde1e6;
+  --color-text: #1a1d21;
+  --color-text-dim: #5b6470;
+  --color-accent: #2563eb;
+  --color-accent-contrast: #ffffff;
+  --color-danger: #c0362c;
+  --color-danger-bg: #fbe9e7;
+  --color-warning: #a86400;
+  --color-warning-bg: #fff4e0;
+  --color-info: #1c6fa5;
+  --color-info-bg: #e6f2fa;
+  --color-success: #1c7a4d;
+  --color-badge-running: #1c7a4d;
+  --color-badge-stopped: #5b6470;
+  --color-badge-error: #c0362c;
+  --color-badge-paused: #a86400;
+
+  --radius: 6px;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #16181d;
+    --color-bg-alt: #1c1f26;
+    --color-surface: #20232b;
+    --color-border: #2e323c;
+    --color-text: #e7e9ec;
+    --color-text-dim: #9aa2ad;
+    --color-accent: #5b8cff;
+    --color-accent-contrast: #0b1020;
+    --color-danger: #ff6b60;
+    --color-danger-bg: #3a1f1d;
+    --color-warning: #e2a83d;
+    --color-warning-bg: #3a2f14;
+    --color-info: #6cb6ea;
+    --color-info-bg: #17293a;
+    --color-success: #57c98a;
+    --color-badge-running: #57c98a;
+    --color-badge-stopped: #9aa2ad;
+    --color-badge-error: #ff6b60;
+    --color-badge-paused: #e2a83d;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+#app {
+  height: 100%;
+}
+
+a {
+  color: var(--color-accent);
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button.primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-contrast);
+}
+
+button.danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+input,
+select {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+th {
+  color: var(--color-text-dim);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge.running {
+  color: var(--color-badge-running);
+  background: color-mix(in srgb, var(--color-badge-running) 15%, transparent);
+}
+
+.badge.stopped {
+  color: var(--color-badge-stopped);
+  background: color-mix(in srgb, var(--color-badge-stopped) 15%, transparent);
+}
+
+.badge.error {
+  color: var(--color-badge-error);
+  background: color-mix(in srgb, var(--color-badge-error) 15%, transparent);
+}
+
+.badge.paused {
+  color: var(--color-badge-paused);
+  background: color-mix(in srgb, var(--color-badge-paused) 15%, transparent);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--color-text-dim);
+}
+
+.empty-state h3 {
+  color: var(--color-text);
+  margin: 8px 0;
+}
+
+.skeleton {
+  color: var(--color-text-dim);
+  padding: 24px;
+}
+
+.stale {
+  opacity: 0.5;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 45%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.dialog {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 20px;
+  width: min(480px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.field label {
+  font-size: 12px;
+  color: var(--color-text-dim);
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--color-text-dim);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}

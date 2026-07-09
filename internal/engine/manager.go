@@ -23,6 +23,15 @@ type Manager struct {
 	// "stopped"). They are only dropped by an explicit Stop(id) or by
 	// Start(id) hot-swapping in a fresh runner for the same id.
 	runners map[string]*runner
+
+	// hubs holds one snapshotHub per pipeline ID that has ever been
+	// started or subscribed to, and lives for the Manager's whole lifetime
+	// (not torn down on Stop/hot-swap) so a WS client can Subscribe before,
+	// during, or across a pipeline's enable/disable/reload cycles without
+	// losing its subscription. An entry is only pruned by Remove(id) (a
+	// pipeline being permanently deleted, not just disabled) or by
+	// StopAll (process shutdown) — see those methods.
+	hubs map[string]*snapshotHub
 }
 
 // Option configures a Manager at construction time.
@@ -50,6 +59,7 @@ func NewManager(opts ...Option) *Manager {
 		clock:         realClock{},
 		tickerFactory: NewRealTicker,
 		runners:       make(map[string]*runner),
+		hubs:          make(map[string]*snapshotHub),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -81,7 +91,7 @@ func (m *Manager) Start(p model.Pipeline, devices map[string]model.Device, io De
 		return err
 	}
 
-	r := newRunner(p.ID, g, devices, io, m.clock, m.tickerFactory)
+	r := newRunner(p.ID, g, devices, io, m.clock, m.tickerFactory, m.hub(p.ID))
 
 	m.mu.Lock()
 	old := m.runners[p.ID]
@@ -97,7 +107,12 @@ func (m *Manager) Start(p model.Pipeline, devices map[string]model.Device, io De
 
 // Stop stops the runner for id, if any, waiting for its goroutine to exit
 // cleanly at the next tick boundary. Stopping an id with no runner is a
-// no-op.
+// no-op. Stop deliberately leaves id's hub (if any) in Manager.hubs — Stop
+// is also what a pipeline disable and Start's hot-swap-to-disabled path use
+// (internal/api/pipelines.go's handleDisablePipeline, and Start below), and
+// per the hubs field doc a WS client must be able to stay subscribed across
+// a pipeline's enable/disable/reload cycles. Use Remove for the "this
+// pipeline is never coming back" case (pipeline deletion).
 func (m *Manager) Stop(id string) {
 	m.mu.Lock()
 	r, ok := m.runners[id]
@@ -110,7 +125,36 @@ func (m *Manager) Stop(id string) {
 	}
 }
 
-// StopAll stops every running pipeline, e.g. on process shutdown.
+// Remove stops the runner for id (like Stop) and additionally prunes and
+// closes id's snapshotHub, if one was ever created — for use when a
+// pipeline is being permanently deleted (internal/api/pipelines.go's
+// handleDeletePipeline), not merely disabled. Closing the hub closes every
+// current subscriber's channel so its relay goroutine exits cleanly
+// (internal/api/ws.go's relaySnapshots sees ok==false and returns) instead
+// of leaking the hub (and its subscriber map) for the lifetime of the
+// process. A subsequent Subscribe(id) — e.g. a pipeline later re-created
+// with the same id — transparently gets a fresh hub via Manager.hub.
+func (m *Manager) Remove(id string) {
+	m.mu.Lock()
+	r, ok := m.runners[id]
+	if ok {
+		delete(m.runners, id)
+	}
+	h, hubOK := m.hubs[id]
+	if hubOK {
+		delete(m.hubs, id)
+	}
+	m.mu.Unlock()
+	if ok {
+		r.stop()
+	}
+	if hubOK {
+		h.close()
+	}
+}
+
+// StopAll stops every running pipeline and prunes+closes every hub, e.g. on
+// process shutdown — unlike Stop, there is no "might come back" case here.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
 	runners := make([]*runner, 0, len(m.runners))
@@ -118,9 +162,17 @@ func (m *Manager) StopAll() {
 		runners = append(runners, r)
 		delete(m.runners, id)
 	}
+	hubs := make([]*snapshotHub, 0, len(m.hubs))
+	for id, h := range m.hubs {
+		hubs = append(hubs, h)
+		delete(m.hubs, id)
+	}
 	m.mu.Unlock()
 	for _, r := range runners {
 		r.stop()
+	}
+	for _, h := range hubs {
+		h.close()
 	}
 }
 
@@ -135,4 +187,32 @@ func (m *Manager) Status(id string) (Status, bool) {
 		return Status{}, false
 	}
 	return r.getStatus(), true
+}
+
+// hub returns the snapshotHub for pipeline id, creating it on first use.
+// Called both from Start (so a runner always has somewhere to publish to)
+// and from Subscribe (so a client can subscribe to a pipeline that hasn't
+// started running yet, e.g. still disabled).
+func (m *Manager) hub(id string) *snapshotHub {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h, ok := m.hubs[id]
+	if !ok {
+		h = newSnapshotHub()
+		m.hubs[id] = h
+	}
+	return h
+}
+
+// Subscribe registers a listener for pipeline id's per-tick TickSnapshots
+// (docs/07-pipeline-engine.md "Debug and observability hooks"). It never
+// fails, even if id doesn't (yet) name a known pipeline or isn't currently
+// running — the returned channel simply receives nothing until a runner
+// for id exists and ticks. Callers that need to distinguish "unknown
+// pipeline" (e.g. the WS layer's subscribe error per docs/10-api.md) check
+// pipeline existence against the store themselves before calling Subscribe.
+// The returned unsubscribe func is idempotent and safe to call more than
+// once.
+func (m *Manager) Subscribe(id string) (<-chan *TickSnapshot, func()) {
+	return m.hub(id).subscribe()
 }

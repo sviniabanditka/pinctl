@@ -24,19 +24,38 @@ import (
 // accepted verbatim, and an empty one defaults to this well-known id.
 const defaultBoardID = "brd_local"
 
-// Server holds the dependencies the v0.2 device/pipeline handlers need.
+// Server holds the dependencies the v0.2 device/pipeline handlers need,
+// plus (v0.3) the WS hub and the board port/id the live publishers report
+// status against.
 type Server struct {
-	sess  Session
-	store *store.Store
-	mgr   *engine.Manager
-	io    engine.DeviceIO
+	sess    Session
+	port    string
+	store   *store.Store
+	mgr     *engine.Manager
+	io      engine.DeviceIO
+	hub     *Hub
+	handler http.Handler
 }
 
+// ServeHTTP makes *Server itself an http.Handler (the full /api/v1 +
+// static-UI mux built by NewServer), so callers such as cmd/pinctl can hold
+// onto the concrete *Server (for StartPublishers/CloseWS) and still hand it
+// straight to http.Server.Handler.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
+
+// CloseWS sends every currently-connected WebSocket client a clean close
+// frame and tears its connection down, per docs/10-api.md's graceful
+// shutdown requirement. Safe to call once publishers are stopped and no new
+// broadcasts are expected.
+func (s *Server) CloseWS() { s.hub.closeAll() }
+
 // NewServer builds the full /api/v1 handler: the v0.1 raw-pin endpoints
-// (unchanged, see api.go) plus the v0.2 device/pipeline CRUD, enable/
-// disable, and validate endpoints from docs/10-api.md. port is the serial
-// port path reported by GET /api/v1/board, same as NewHandler.
-func NewServer(sess Session, port string, st *store.Store, mgr *engine.Manager, io engine.DeviceIO) http.Handler {
+// (unchanged, see api.go), the v0.2 device/pipeline CRUD, enable/disable,
+// and validate endpoints, the v0.3 WebSocket endpoint (ws.go) from
+// docs/10-api.md, and (non-/api/* paths) the embedded UI (static.go). port
+// is the serial port path reported by GET /api/v1/board, same as
+// NewHandler.
+func NewServer(sess Session, port string, st *store.Store, mgr *engine.Manager, io engine.DeviceIO) *Server {
 	mux := http.NewServeMux()
 
 	// v0.1 raw-pin endpoints, verbatim from NewHandler.
@@ -45,13 +64,14 @@ func NewServer(sess Session, port string, st *store.Store, mgr *engine.Manager, 
 	mux.HandleFunc("GET /api/v1/pins/{pin}", handleReadPin(sess))
 	mux.HandleFunc("POST /api/v1/pins/{pin}", handleWritePin(sess))
 
-	s := &Server{sess: sess, store: st, mgr: mgr, io: io}
+	s := &Server{sess: sess, port: port, store: st, mgr: mgr, io: io, hub: newHub()}
 
 	mux.HandleFunc("GET /api/v1/devices", s.handleListDevices)
 	mux.HandleFunc("POST /api/v1/devices", s.handleCreateDevice)
 	mux.HandleFunc("GET /api/v1/devices/{id}", s.handleGetDevice)
 	mux.HandleFunc("PATCH /api/v1/devices/{id}", s.handleUpdateDevice)
 	mux.HandleFunc("DELETE /api/v1/devices/{id}", s.handleDeleteDevice)
+	mux.HandleFunc("POST /api/v1/devices/{id}/write", s.handleWriteDevice)
 
 	mux.HandleFunc("GET /api/v1/pipelines", s.handleListPipelines)
 	mux.HandleFunc("POST /api/v1/pipelines", s.handleCreatePipeline)
@@ -62,7 +82,19 @@ func NewServer(sess Session, port string, st *store.Store, mgr *engine.Manager, 
 	mux.HandleFunc("POST /api/v1/pipelines/{id}/enable", s.handleEnablePipeline)
 	mux.HandleFunc("POST /api/v1/pipelines/{id}/disable", s.handleDisablePipeline)
 
-	return logRequests(mux)
+	mux.HandleFunc("GET /api/v1/ws", s.handleWS)
+
+	// Low-priority catch-all: any /api/* path not matched by one of the
+	// specific patterns above lands here (Go's ServeMux prefers the more
+	// specific pattern whenever one matches), turning it into the
+	// docs/10-api.md JSON 404 envelope rather than net/http's default
+	// plain-text 404 or (via wrapWithStatic below) the SPA fallback.
+	mux.HandleFunc("/api/", handleAPINotFound)
+
+	// Everything else: non-/api/* paths are served from the embedded UI
+	// (static.go), with a history-mode fallback to index.html.
+	s.handler = logRequests(wrapWithStatic(mux))
+	return s
 }
 
 // decodeJSONBody decodes r's body into dst, capping it at maxBytes and
