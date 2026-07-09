@@ -185,7 +185,7 @@ core domain model in [00-design-brief.md](./00-design-brief.md)).
 | `id` | string | yes | `dev_…`, immutable. |
 | `name` | string | yes | User-editable display name, e.g. `"LDR on A0"`. |
 | `boardId` | string | yes | Must reference an existing entry in `boards.json` (see [Validation rules](#validation-rules)). |
-| `pin` | integer | yes | Pin/channel number, in the numbering `internal/board` exposes for that role (digital pin number for `digital-in`/`digital-out`/`pwm-out`; analog channel index for `analog-in`, per Firmata's analog addressing — see [05-serial-protocol.md](./05-serial-protocol.md)). |
+| `pin` | integer | yes | Firmata pin number for every role, in the single numbering the board's capability table exposes (on an Uno: D0–D13 = 0–13, A0–A5 = 14–19). For `analog-in` the runtime resolves the pin's analog channel from the capability/analog-mapping tables itself (see [05-serial-protocol.md](./05-serial-protocol.md)) — the user never enters a channel index, avoiding the "pin 0 vs channel 0 (A0)" ambiguity. |
 | `role` | string | yes | One of `digital-in`, `digital-out`, `analog-in`, `pwm-out` (v2: `servo`, `i2c`, per the brief). Immutable after creation — changing a device's role out from under pipelines that reference it is a delete-and-recreate, not an edit, so referencing pipelines fail validation predictably instead of silently changing type. |
 | `options` | object | no | Per-role config, see table below. Defaults apply for any omitted field. |
 | `createdAt` / `updatedAt` | string (RFC 3339) | yes | Same semantics as on `Board`. |
@@ -213,7 +213,7 @@ core domain model in [00-design-brief.md](./00-design-brief.md)).
       "id": "dev_9zq3v7ab4c",
       "name": "LDR on A0",
       "boardId": "brd_4kx9m2pqrs",
-      "pin": 0,
+      "pin": 14,
       "role": "analog-in",
       "options": {},
       "createdAt": "2026-01-04T10:15:00Z",
