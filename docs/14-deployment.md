@@ -24,7 +24,8 @@ if anything here appears to contradict those, they win.
 | Target | Status |
 |---|---|
 | Raspberry Pi OS (arm64, 64-bit) | Primary supported target (Pi 4, Pi 5, Zero 2 W in 64-bit mode). |
-| Raspberry Pi OS (armhf/armv7, 32-bit) | Primary supported target (Pi Zero W, Pi 2/3 in 32-bit mode). |
+| Raspberry Pi OS (armhf/armv7, 32-bit) | Primary supported target (Pi 2/3/4 in 32-bit mode). The released `armv7` binary is built with `GOARM=7`. |
+| Raspberry Pi OS on ARMv6 (Pi Zero, Zero W, Pi 1) | No release binary — the `armv7` asset faults on an ARMv6 core. Build with `GOARM=6` and install it locally (`sudo ./install.sh ./pinctl`). |
 | Generic linux/amd64, linux/arm64 | Builds and runs (useful for a Linux dev box or a non-Pi SBC); not a reference platform for the performance requirements in [02-requirements.md](./02-requirements.md). |
 | macOS (darwin/arm64) | Development only, per NFR-PORT-2 — not a deployment target. |
 

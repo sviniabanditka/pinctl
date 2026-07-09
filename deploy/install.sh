@@ -4,14 +4,13 @@
 #
 # Two ways to run it:
 #
-#   1. Release install (once GitHub releases exist for this repo):
-#        curl -fsSL https://pinctl.example/install.sh | sh
-#      Downloads the release binary matching this machine's arch from
-#      https://github.com/sviniabanditka/pinctl/releases, verifies its
-#      checksum, and installs it.
+#   1. Release install:
+#        curl -fsSL https://raw.githubusercontent.com/sviniabanditka/pinctl/main/deploy/install.sh | sudo sh
+#      Downloads the binary matching this machine's arch from the latest
+#      release at https://github.com/sviniabanditka/pinctl/releases,
+#      verifies its checksum, and installs it.
 #
-#   2. Local-binary install (for pre-release use, before any GitHub
-#      release has been tagged — e.g. a binary you built yourself with
+#   2. Local-binary install (a binary you built yourself with
 #      `go build -o pinctl ./cmd/pinctl` after `npm run build` in web/):
 #        ./install.sh ./pinctl
 #        sudo ./install.sh /path/to/pinctl
@@ -63,10 +62,15 @@ detect_arch() {
     case "$_uname_m" in
         aarch64|arm64)
             echo arm64 ;;
-        armv7l|armv6l|arm)
+        armv7l|arm)
             echo armv7 ;;
         x86_64|amd64)
             echo amd64 ;;
+        armv6l)
+            # The armv7 asset is built with GOARM=7; running it on an ARMv6
+            # core (Pi Zero/Zero W, Pi 1) faults on an illegal instruction.
+            # Fail loudly rather than install something that won't start.
+            die "unsupported architecture: armv6 (Pi Zero/1). Build from source with GOARM=6: CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=6 go build -o pinctl ./cmd/pinctl, then: sudo ./install.sh ./pinctl" ;;
         *)
             die "unsupported architecture: $_uname_m (pinctl supports linux/arm64, linux/armv7, linux/amd64 — see docs/14-deployment.md#supported-targets)" ;;
     esac
