@@ -74,6 +74,7 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyPinModes(created)
+	s.notifyDevicesChanged()
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -122,6 +123,7 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyPinModes(updated)
+	s.notifyDevicesChanged()
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -130,6 +132,7 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	s.notifyDevicesChanged()
 	w.WriteHeader(http.StatusNoContent)
 }
 

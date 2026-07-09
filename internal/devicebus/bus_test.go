@@ -2,6 +2,7 @@ package devicebus
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -258,4 +259,203 @@ func TestBus_RunClosesChannelsOnCancelAndSubscribeAfterIsSane(t *testing.T) {
 	}
 	unsub2()
 	unsub2() // safe to call twice
+}
+
+// ---- NoteWrite / WrapWriter ----
+
+// fakeIO is a controllable engine.DeviceIO: reads are canned like
+// fakeReader, writes are recorded (and can be made to fail) so WrapWriter's
+// only-on-success behaviour is directly observable.
+type fakeIO struct {
+	mu       sync.Mutex
+	reads    map[string]engine.Value
+	writes   []engine.Value
+	attempts int
+	failErr  error
+}
+
+func newFakeIO() *fakeIO {
+	return &fakeIO{reads: map[string]engine.Value{}}
+}
+
+func (f *fakeIO) ReadDevice(d model.Device) (engine.Value, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads[d.ID], nil
+}
+
+func (f *fakeIO) WriteDevice(d model.Device, v engine.Value) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attempts++
+	if f.failErr != nil {
+		return f.failErr
+	}
+	f.writes = append(f.writes, v)
+	return nil
+}
+
+func (f *fakeIO) writeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.writes)
+}
+
+func (f *fakeIO) attemptCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.attempts
+}
+
+func TestBus_NoteWriteFansOutAndDedups(t *testing.T) {
+	l := &fakeLister{}
+	b := New(newFakeIO(), l, time.Hour) // interval irrelevant: Run's poll loop is not exercised here
+
+	ch1, unsub1 := b.Subscribe()
+	defer unsub1()
+	ch2, unsub2 := b.Subscribe()
+	defer unsub2()
+
+	d := testDevice("dev_out", model.RoleDigitalOut)
+
+	b.NoteWrite(d, engine.BoolValue(true))
+
+	u1 := requireUpdate(t, ch1, time.Second)
+	u2 := requireUpdate(t, ch2, time.Second)
+	if u1.Device.ID != "dev_out" || !u1.Value.Equal(engine.BoolValue(true)) {
+		t.Errorf("sub1 update = %+v, want dev_out=true", u1)
+	}
+	if u2.Device.ID != "dev_out" || !u2.Value.Equal(engine.BoolValue(true)) {
+		t.Errorf("sub2 update = %+v, want dev_out=true", u2)
+	}
+
+	// Same value again: no further Update (same change-detection as poll).
+	b.NoteWrite(d, engine.BoolValue(true))
+	select {
+	case u := <-ch1:
+		t.Fatalf("unexpected update for unchanged NoteWrite value: %+v", u)
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	// Snapshot reflects the last noted value.
+	snap := b.Snapshot()
+	if got, ok := snap["dev_out"]; !ok || !got.Value.Equal(engine.BoolValue(true)) {
+		t.Errorf("Snapshot()[dev_out] = %+v, ok=%v, want true", got, ok)
+	}
+
+	// A genuinely different value does publish.
+	b.NoteWrite(d, engine.BoolValue(false))
+	u1 = requireUpdate(t, ch1, time.Second)
+	if !u1.Value.Equal(engine.BoolValue(false)) {
+		t.Errorf("update after change = %+v, want false", u1)
+	}
+}
+
+func TestWrapWriter_OnlyNotesOnSuccess(t *testing.T) {
+	l := &fakeLister{}
+	b := New(newFakeIO(), l, time.Hour)
+	io := newFakeIO()
+	wrapped := WrapWriter(io, b)
+
+	d := testDevice("dev_out", model.RoleDigitalOut)
+
+	io.failErr = errBoardOffline
+	if err := wrapped.WriteDevice(d, engine.BoolValue(true)); err == nil {
+		t.Fatal("expected the underlying write's error to propagate")
+	}
+	if _, ok := b.Snapshot()["dev_out"]; ok {
+		t.Fatal("a failing WriteDevice must not have called NoteWrite")
+	}
+
+	io.failErr = nil
+	if err := wrapped.WriteDevice(d, engine.BoolValue(true)); err != nil {
+		t.Fatalf("WriteDevice: %v", err)
+	}
+	snap, ok := b.Snapshot()["dev_out"]
+	if !ok || !snap.Value.Equal(engine.BoolValue(true)) {
+		t.Fatalf("a successful WriteDevice must have called NoteWrite; snapshot = %+v, ok=%v", snap, ok)
+	}
+	if io.attemptCount() != 2 {
+		t.Fatalf("underlying write attempts = %d, want 2 (WrapWriter must call through on every attempt)", io.attemptCount())
+	}
+}
+
+// ---- End-to-end: engine.Manager driving a wrapped DeviceIO ----
+
+// manualTicker/manualTickerFactory give the end-to-end test a
+// deterministically-fired tick instead of racing real wall-clock time, per
+// docs/07-pipeline-engine.md "Determinism and testing hooks".
+type manualTicker struct {
+	ch chan time.Time
+}
+
+func (m *manualTicker) C() <-chan time.Time { return m.ch }
+func (m *manualTicker) Stop()               {}
+
+func manualTickerFactory() (engine.TickerFactory, <-chan *manualTicker) {
+	tickers := make(chan *manualTicker, 8)
+	return func(time.Duration) engine.Ticker {
+		mt := &manualTicker{ch: make(chan time.Time, 1)}
+		tickers <- mt
+		return mt
+	}, tickers
+}
+
+// TestWrapWriter_EngineDrivenWriteReachesBusSubscriber drives a real
+// engine.Manager pipeline (constant true -> device-write) through a
+// WrapWriter-wrapped DeviceIO and asserts a bus subscriber sees the
+// resulting Update — proving the seam this package adds closes the gap
+// described in devicebus.go's package doc: an engine-driven output write
+// becomes observable outside the engine, exactly like a polled input.
+func TestWrapWriter_EngineDrivenWriteReachesBusSubscriber(t *testing.T) {
+	led := model.Device{ID: "led", BoardID: "brd_local", Pin: 3, Role: model.RoleDigitalOut}
+	devices := map[string]model.Device{"led": led}
+
+	valueCfg, err := json.Marshal(map[string]any{"kind": "bool", "value": true})
+	if err != nil {
+		t.Fatalf("marshal constant config: %v", err)
+	}
+	writeCfg, err := json.Marshal(map[string]any{"deviceId": "led"})
+	if err != nil {
+		t.Fatalf("marshal device-write config: %v", err)
+	}
+	p := model.Pipeline{
+		ID:      "p_notewrite",
+		Enabled: true,
+		TickMs:  20,
+		Nodes: []model.Node{
+			{ID: "n1", Type: "constant", Config: valueCfg},
+			{ID: "n2", Type: "device-write", Config: writeCfg},
+		},
+		Edges: []model.Edge{{From: "n1.out", To: "n2.in"}},
+	}
+
+	io := newFakeIO()
+	l := &fakeLister{devices: []model.Device{led}}
+	b := New(io, l, time.Hour) // poll loop irrelevant: only readable roles are polled, led is not
+	wrapped := WrapWriter(io, b)
+
+	ch, unsub := b.Subscribe()
+	defer unsub()
+
+	tf, tickers := manualTickerFactory()
+	mgr := engine.NewManager(engine.WithTickerFactory(tf))
+	t.Cleanup(mgr.StopAll)
+
+	if err := mgr.Start(p, devices, wrapped); err != nil {
+		t.Fatalf("mgr.Start: %v", err)
+	}
+
+	var mt *manualTicker
+	select {
+	case mt = <-tickers:
+	case <-time.After(time.Second):
+		t.Fatal("runner never created a ticker")
+	}
+	mt.ch <- time.Now()
+
+	u := requireUpdate(t, ch, 2*time.Second)
+	if u.Device.ID != "led" || !u.Value.Equal(engine.BoolValue(true)) {
+		t.Fatalf("bus update = %+v, want led=true", u)
+	}
 }

@@ -8,8 +8,11 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -22,6 +25,7 @@ type Config struct {
 	DataDir string       `yaml:"data_dir"`
 	Serial  SerialConfig `yaml:"serial"`
 	Log     LogConfig    `yaml:"log"`
+	MQTT    MQTT         `yaml:"mqtt"`
 }
 
 // HTTPConfig is config.yaml's http: section.
@@ -44,6 +48,138 @@ type LogConfig struct {
 	Format string `yaml:"format"` // json | text
 }
 
+// Secret is a string that must never appear in a log line, an error
+// string, or the formatted output of any type that holds it — used for
+// MQTT.Password (docs/15-mqtt-bridge.md "Configuration": "The password is
+// never logged, never echoed in an error, and never leaves the process.").
+// String and GoString both redact the value, which is what fmt's %v/%s/%q
+// and %+v/%#v verbs call into for any value (including a struct field)
+// that implements fmt.Stringer/fmt.GoStringer — so printing a Config, an
+// MQTT, or a Secret directly all redact. Only an explicit string(secret)
+// conversion exposes the real value; that happens exactly once, when the
+// paho adapter hands it to the MQTT client library.
+type Secret string
+
+// String implements fmt.Stringer.
+func (s Secret) String() string {
+	if s == "" {
+		return ""
+	}
+	return "REDACTED"
+}
+
+// GoString implements fmt.GoStringer, covering %#v.
+func (s Secret) GoString() string { return s.String() }
+
+// Duration is a time.Duration that unmarshals from a YAML string like "1s"
+// or "60s" (time.ParseDuration syntax), per docs/15-mqtt-bridge.md's
+// min_publish_interval/max_publish_interval.
+type Duration time.Duration
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return err
+	}
+	parsed, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("config: mqtt: invalid duration %q: %w", s, err)
+	}
+	*d = Duration(parsed)
+	return nil
+}
+
+// String implements fmt.Stringer.
+func (d Duration) String() string { return time.Duration(d).String() }
+
+// MQTT is config.yaml's mqtt: section (docs/15-mqtt-bridge.md
+// "Configuration"). The bridge is off by default: with Enabled false, no
+// client is constructed and no goroutine runs.
+type MQTT struct {
+	Enabled bool `yaml:"enabled"`
+	// Broker is the connection URL, e.g. tcp://192.168.1.10:1883. Required,
+	// and must have a supported scheme (tcp/tls/ssl/ws/wss), when Enabled.
+	Broker   string `yaml:"broker"`
+	ClientID string `yaml:"client_id"`
+	Username string `yaml:"username"`
+	// Password and PasswordFile are mutually exclusive. If neither is set,
+	// the MQTT_PASSWORD environment variable is used. PasswordFile is read
+	// once at Load, trimmed of a trailing newline, and must not be
+	// group/other readable. After Load returns, Password holds whichever
+	// of the three sources resolved (if any); PasswordFile is left as
+	// originally configured for reference, but is no longer consulted.
+	Password     Secret `yaml:"password"`
+	PasswordFile string `yaml:"password_file"`
+	BaseTopic    string `yaml:"base_topic"`
+	// DiscoveryPrefix set to "" disables Home Assistant discovery entirely
+	// while state/commands still work — a deliberate value, not "unset".
+	DiscoveryPrefix string `yaml:"discovery_prefix"`
+	// AnalogDeadband is the minimum raw ADC-count change (>= 0) that
+	// triggers a state publish for an analog-in device.
+	AnalogDeadband     int      `yaml:"analog_deadband"`
+	MinPublishInterval Duration `yaml:"min_publish_interval"`
+	MaxPublishInterval Duration `yaml:"max_publish_interval"`
+}
+
+// validate checks MQTT's fields for internal consistency and, when
+// Enabled, that a usable broker URL was given. It assumes Password has
+// already been resolved (password_file/env applied) by resolvePassword.
+func (m MQTT) validate() error {
+	if m.AnalogDeadband < 0 {
+		return fmt.Errorf("config: mqtt: analog_deadband must be >= 0")
+	}
+	if !m.Enabled {
+		return nil
+	}
+	if m.Broker == "" {
+		return fmt.Errorf("config: mqtt: broker is required when mqtt.enabled is true")
+	}
+	u, err := url.Parse(m.Broker)
+	if err != nil {
+		return fmt.Errorf("config: mqtt: parsing broker url: %w", err)
+	}
+	switch u.Scheme {
+	case "tcp", "tls", "ssl", "ws", "wss":
+	default:
+		return fmt.Errorf("config: mqtt: broker scheme %q is not supported (want one of tcp, tls, ssl, ws, wss)", u.Scheme)
+	}
+	return nil
+}
+
+// resolvePassword fills in m.Password from password_file or the
+// MQTT_PASSWORD environment variable, per docs/15-mqtt-bridge.md
+// "Configuration". password and password_file are mutually exclusive;
+// password_file must not be group/other readable.
+func resolvePassword(m *MQTT) error {
+	if m.Password != "" && m.PasswordFile != "" {
+		return fmt.Errorf("config: mqtt: password and password_file are mutually exclusive")
+	}
+
+	if m.PasswordFile != "" {
+		info, err := os.Stat(m.PasswordFile)
+		if err != nil {
+			return fmt.Errorf("config: mqtt: reading password_file: %w", err)
+		}
+		if info.Mode().Perm()&0o044 != 0 {
+			return fmt.Errorf("config: mqtt: password_file %s must not be group- or other-readable (mode %s)", m.PasswordFile, info.Mode().Perm())
+		}
+		data, err := os.ReadFile(m.PasswordFile)
+		if err != nil {
+			return fmt.Errorf("config: mqtt: reading password_file: %w", err)
+		}
+		m.Password = Secret(strings.TrimRight(string(data), "\r\n"))
+		return nil
+	}
+
+	if m.Password == "" {
+		if env := os.Getenv("MQTT_PASSWORD"); env != "" {
+			m.Password = Secret(env)
+		}
+	}
+	return nil
+}
+
 // Default returns the documented defaults (docs/14-deployment.md), used
 // both as Load's starting point (so a partial config.yaml only overrides
 // what it specifies) and when no config file is found at all.
@@ -53,6 +189,20 @@ func Default() Config {
 		DataDir: defaultDataDir(),
 		Serial:  SerialConfig{Baud: 57600},
 		Log:     LogConfig{Level: "info", Format: "text"},
+		MQTT:    defaultMQTT(),
+	}
+}
+
+// defaultMQTT returns docs/15-mqtt-bridge.md's documented mqtt: defaults.
+func defaultMQTT() MQTT {
+	return MQTT{
+		Enabled:            false,
+		ClientID:           "pinctl",
+		BaseTopic:          "pinctl",
+		DiscoveryPrefix:    "homeassistant",
+		AnalogDeadband:     4,
+		MinPublishInterval: Duration(time.Second),
+		MaxPublishInterval: Duration(60 * time.Second),
 	}
 }
 
@@ -107,30 +257,35 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("config: reading %s: %w", c, err)
 		}
 	}
-	if data == nil {
-		return cfg, nil
+	if data != nil {
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		if err := dec.Decode(&cfg); err != nil {
+			return Config{}, fmt.Errorf("config: parsing %s: %w", found, err)
+		}
+
+		if cfg.HTTP.Addr == "" {
+			cfg.HTTP.Addr = ":8080"
+		}
+		if cfg.DataDir == "" {
+			cfg.DataDir = defaultDataDir()
+		}
+		if cfg.Serial.Baud == 0 {
+			cfg.Serial.Baud = 57600
+		}
+		if cfg.Log.Level == "" {
+			cfg.Log.Level = "info"
+		}
+		if cfg.Log.Format == "" {
+			cfg.Log.Format = "text"
+		}
 	}
 
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return Config{}, fmt.Errorf("config: parsing %s: %w", found, err)
+	if err := resolvePassword(&cfg.MQTT); err != nil {
+		return Config{}, err
 	}
-
-	if cfg.HTTP.Addr == "" {
-		cfg.HTTP.Addr = ":8080"
-	}
-	if cfg.DataDir == "" {
-		cfg.DataDir = defaultDataDir()
-	}
-	if cfg.Serial.Baud == 0 {
-		cfg.Serial.Baud = 57600
-	}
-	if cfg.Log.Level == "" {
-		cfg.Log.Level = "info"
-	}
-	if cfg.Log.Format == "" {
-		cfg.Log.Format = "text"
+	if err := cfg.MQTT.validate(); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }

@@ -197,14 +197,14 @@ data model doesn't have room for yet. Trigger: MVP is stable and someone
 wants to drive a servo or an I2C sensor (e.g. a BMP280) without hand-editing
 Firmata calls outside pinctl.
 
-**MQTT / Home Assistant bridge.** What: publish device values and accept
-commands over MQTT, with a Home Assistant discovery integration, so pinctl
-devices show up as HA entities. Why deferred: it's an external-integration
-surface the brief calls out as a non-goal for v0.x ("no cloud, no MQTT/Home
-Assistant"), and it implies a new dependency (an MQTT client) and a second
-long-lived connection pattern alongside the WebSocket. Trigger: multiple
-users ask for pinctl devices to appear in an existing home-automation setup
-rather than standing alone.
+**MQTT / Home Assistant bridge — shipped.** `internal/mqtt` publishes device
+values, accepts commands for output devices, and announces itself via Home
+Assistant discovery. Off by default (`mqtt.enabled: false`); with it off no
+client is constructed and no goroutine runs. The engine stays authoritative:
+a command targeting a pin an enabled pipeline drives is refused and the
+device's true state republished. See [15-mqtt-bridge.md](./15-mqtt-bridge.md).
+The brief's original "no MQTT/Home Assistant" non-goal was amended
+deliberately, not quietly — see [00-design-brief.md](./00-design-brief.md).
 
 **History / metrics with SQLite.** What: retain pin value and pipeline
 tick history beyond the current in-memory snapshot, queryable for graphs

@@ -2,15 +2,25 @@
 // once and fans the resulting change events out to any number of
 // subscribers, per docs/15-mqtt-bridge.md's "one poll, many readers"
 // architecture: the WebSocket hub (internal/api) and the MQTT bridge
-// (internal/mqtt, not yet built) both read the same stream instead of each
-// polling the board independently.
+// (internal/mqtt) both read the same stream instead of each polling the
+// board independently.
+//
+// Firmata never reports an output pin's value back, so polling alone only
+// ever covers the readable roles (digital-in, analog-in). Output state
+// (digital-out, pwm-out) becomes observable the other way around: every
+// writer — the pipeline engine, the REST manual write, the MQTT command
+// handler — writes through an engine.DeviceIO wrapped with WrapWriter,
+// which calls NoteWrite on success. NoteWrite feeds the exact same Update
+// stream and change-detection as the poll loop, so a subscriber sees a
+// device's value change no matter which side of the Reader/writer split
+// caused it.
 //
 // The bus does change-detection (an Update is published only when a
-// device's value differs from its previous poll) but no publishing policy
-// on top of that — deadbanding, rate limiting, retained-state semantics and
-// the like belong to whichever subscriber needs them (docs/15's
-// "Publishing policy: deadband and rate" is MQTT-bridge-specific and does
-// not belong here).
+// device's value differs from its previous known value) but no publishing
+// policy on top of that — deadbanding, rate limiting, retained-state
+// semantics and the like belong to whichever subscriber needs them
+// (docs/15's "Publishing policy: deadband and rate" is MQTT-bridge-specific
+// and does not belong here).
 package devicebus
 
 import (
@@ -224,3 +234,52 @@ func (b *Bus) Snapshot() map[string]Update {
 // subscriber's buffer was full — a slow-subscriber counter, not an error
 // condition by itself.
 func (b *Bus) Dropped() int64 { return b.dropped.Load() }
+
+// NoteWrite records v as device d's latest known value and fans an Update
+// out to every current subscriber, using the exact same change-detection
+// (no Update if v matches the previously recorded value) and drop-oldest
+// delivery policy as the poll loop's publishIfChanged. It is how output
+// device state — digital-out, pwm-out — becomes observable at all: Firmata
+// never reports an output pin back, so poll() only ever sees the readable
+// roles, and without a call like this nothing outside the writer would
+// ever learn a pipeline (or anyone else) changed one.
+//
+// Safe to call from any goroutine, concurrently with Run's poll loop and
+// with itself — typically via WrapWriter, once per successful write,
+// including from the engine's own pipeline goroutines.
+func (b *Bus) NoteWrite(d model.Device, v engine.Value) {
+	b.publishIfChanged(d, v)
+}
+
+// writerIO decorates an engine.DeviceIO so every device it successfully
+// writes is also recorded on a Bus, via NoteWrite. See WrapWriter.
+type writerIO struct {
+	io engine.DeviceIO
+	b  *Bus
+}
+
+// WrapWriter returns an engine.DeviceIO wrapping io: ReadDevice passes
+// straight through, and WriteDevice calls through to io and, only if that
+// write succeeds, calls b.NoteWrite(d, v) — this is how output device
+// state becomes observable outside the writer itself (docs/15-mqtt-
+// bridge.md's Home Assistant switches and the WS "devices" topic alike).
+//
+// Wrap once, at startup, before handing the result to anything that writes
+// devices — the engine manager, the REST manual-write handler, the MQTT
+// command handler — so every writer is observed at exactly the point its
+// write actually succeeded, regardless of which of them made it.
+func WrapWriter(io engine.DeviceIO, b *Bus) engine.DeviceIO {
+	return writerIO{io: io, b: b}
+}
+
+func (w writerIO) ReadDevice(d model.Device) (engine.Value, error) {
+	return w.io.ReadDevice(d)
+}
+
+func (w writerIO) WriteDevice(d model.Device, v engine.Value) error {
+	if err := w.io.WriteDevice(d, v); err != nil {
+		return err
+	}
+	w.b.NoteWrite(d, v)
+	return nil
+}

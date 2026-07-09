@@ -192,6 +192,23 @@ log:
   level: info
   # json (production/journald-friendly) or text
   format: json
+
+# Optional MQTT bridge and Home Assistant discovery — off by default.
+# See docs/14-deployment.md#configuration and docs/15-mqtt-bridge.md
+# before enabling: broker auth, base_topic, and the pipeline-conflict
+# rule are all worth understanding first.
+#
+# mqtt:
+#   enabled: false
+#   broker: tcp://192.168.1.10:1883
+#   client_id: pinctl
+#   username: pinctl
+#   password_file: /etc/pinctl/mqtt-password
+#   base_topic: pinctl
+#   discovery_prefix: homeassistant
+#   analog_deadband: 4
+#   min_publish_interval: 1s
+#   max_publish_interval: 60s
 EOF
     chmod 0644 "$_conf"
 }

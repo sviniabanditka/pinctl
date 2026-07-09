@@ -38,11 +38,18 @@ jobs:
           set -eu
           mkdir -p dist
 
+          # GITHUB_REF_NAME is the pushed tag (e.g. "v1.2.3", this job only
+          # triggers on tag pushes) — baked into cmd/pinctl's version var so
+          # MQTT Home Assistant discovery payloads (docs/15-mqtt-bridge.md's
+          # device.sw_version) report a real release version instead of the
+          # "dev" default every non-release build reports.
+          version="$GITHUB_REF_NAME"
+
           build() {
             os=$1 arch=$2 arm=$3 name=$4
             echo "building ${name}"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" GOARM="$arm" \
-              go build -trimpath -ldflags "-s -w" -o "dist/${name}" ./cmd/pinctl
+              go build -trimpath -ldflags "-s -w -X main.version=${version}" -o "dist/${name}" ./cmd/pinctl
           }
 
           build linux arm64 "" pinctl-linux-arm64

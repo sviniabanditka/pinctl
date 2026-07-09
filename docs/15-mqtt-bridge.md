@@ -198,12 +198,36 @@ isn't Home Assistant.
 
 ## Architecture
 
+Firmata never reports an output pin's value back, so a poll loop alone can
+only ever see `digital-in`/`analog-in`. Output state (`digital-out`,
+`pwm-out`) becomes observable the other way around: every writer — the
+pipeline engine, the REST manual write, and this bridge's own command
+handler — writes through one `engine.DeviceIO` wrapped with
+`devicebus.WrapWriter`. On a successful write, the wrapper calls
+`Bus.NoteWrite`, which feeds the exact same `Update` stream and
+change-detection the poll loop uses. `cmd/pinctl` wires this up once, at
+startup, before handing the wrapped `DeviceIO` to the engine manager, the
+API server, and this bridge's `Deps.IO` — so there is exactly one seam
+where a write becomes "observed", no matter which of the three made it.
+
 ```
-internal/board ──> internal/boardio ──> engine.DeviceIO
+                    engine.DeviceIO (wrapped)
+                            │
+        ┌───────────────────┼────────────────────┐
+        │                   │                    │
+   pipeline engine    REST manual write    mqtt command handler
+        │                   │                    │
+        └───────────────────┼────────────────────┘
+                             ▼
+                  internal/devicebus.WrapWriter
+             (NoteWrite on every successful write)
+                             │
+internal/board ──> internal/boardio ──> engine.DeviceIO (unwrapped read/write)
                                             │
                           ┌─────────────────┴──────────────────┐
                           │        internal/devicebus          │   one poll,
                           │  polls readable devices, fans out  │   many readers
+                          │  (+ NoteWrite for writable ones)   │
                           └───┬────────────────────────────┬───┘
                               │                            │
                     internal/api (WS hub)         internal/mqtt (bridge)
@@ -211,10 +235,16 @@ internal/board ──> internal/boardio ──> engine.DeviceIO
                                                         broker
 ```
 
+This is why the "devices" WebSocket topic and MQTT's state topic both now
+carry output values, not just inputs: a pipeline flipping a relay, a
+`POST /devices/{id}/write`, and an MQTT command all reach subscribers
+through the same one path.
+
 `internal/mqtt` depends on `store` (devices, pipelines, boards), `devicebus`
-(values), `engine.DeviceIO` (writes), and `board.Manager`'s status (per-device
-availability). Nothing depends on `internal/mqtt`; deleting the package would
-leave a compiling binary with one dead config section.
+(values, via the wrapped `engine.DeviceIO` above), and `board.Manager`'s
+status (per-device availability). Nothing depends on `internal/mqtt`;
+deleting the package would leave a compiling binary with one dead config
+section.
 
 The bridge owns one goroutine for its command handler and one for its publish
 loop, both stopped by the context that stops the HTTP publishers.

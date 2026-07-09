@@ -40,7 +40,7 @@ database), per the brief's "one artifact" principle.
 ### Install script
 
 ```sh
-curl -fsSL https://pinctl.example/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/sviniabanditka/pinctl/main/deploy/install.sh | sudo sh
 ```
 
 The script:
@@ -141,7 +141,74 @@ log:
   # json (production/journald-friendly) or text (readable in a terminal
   # during local development).
   format: json
+
+# Optional MQTT bridge and Home Assistant discovery — see
+# 15-mqtt-bridge.md for the full picture (topics, payloads, the
+# pipeline-conflict rule, the deadband/rate publishing policy). Off by
+# default: with enabled: false (or the section omitted entirely) no MQTT
+# client is constructed and no goroutine runs — "disabled means absent".
+mqtt:
+  enabled: false
+  broker: tcp://192.168.1.10:1883 # tcp://, tls://, ws://, wss://
+  client_id: pinctl               # must be unique on the broker
+  username: pinctl
+  # password and password_file are mutually exclusive; see below.
+  password_file: /etc/pinctl/mqtt-password
+  base_topic: pinctl
+  discovery_prefix: homeassistant # HA's own default; "" disables discovery
+  analog_deadband: 4              # raw ADC counts
+  min_publish_interval: 1s
+  max_publish_interval: 60s
 ```
+
+### MQTT password
+
+`mqtt.password` (inline, fine for a throwaway setup), `mqtt.password_file`,
+and the `MQTT_PASSWORD` environment variable are three ways to supply the
+broker password — checked in that order, and `password`/`password_file` are
+mutually exclusive. Exactly one is required if the broker needs auth; none
+is required for an anonymous-access broker.
+
+`password_file` is what a real install should use:
+
+- Owned by the `pinctl` service user, mode `0600` — `pinctl` refuses to
+  start with `mqtt.enabled: true` if the file is group- or other-readable.
+  The installer does **not** create this file for you (there is no
+  sensible default password to write); create it yourself:
+  ```sh
+  echo -n 'the-broker-password' | sudo tee /etc/pinctl/mqtt-password >/dev/null
+  sudo chown pinctl:pinctl /etc/pinctl/mqtt-password
+  sudo chmod 0600 /etc/pinctl/mqtt-password
+  ```
+- Read once at startup; a password rotation needs a service restart, same
+  as any other config change (`FR-DEPLOY-5`).
+
+`MQTT_PASSWORD` is the alternative for a secrets-manager/environment-based
+deployment instead of a file on disk. The systemd unit reads it from
+`/etc/pinctl/pinctl.env` via `EnvironmentFile=-/etc/pinctl/pinctl.env` (the
+leading `-` makes the file optional, so a deployment that isn't using this
+path needs nothing there at all):
+```sh
+# /etc/pinctl/pinctl.env — mode 0600, owned by root, not committed anywhere
+MQTT_PASSWORD=the-broker-password
+```
+
+The password is never logged, never echoed in an error, and never leaves
+the process (docs/15-mqtt-bridge.md's `config.Secret` redacts it in every
+`%v`/`%+v`/`%#v` print).
+
+### Making it show up in Home Assistant
+
+With `mqtt.enabled: true` and a `discovery_prefix` matching HA's own MQTT
+integration setting (`homeassistant` is both pinctl's and HA's default),
+every pinctl device announces itself the moment the bridge connects — no
+YAML, no manual entity setup on the HA side. Point the HA MQTT integration
+at the same broker, restart pinctl (or just wait for its next reconnect),
+and each device shows up grouped under one HA device per pinctl board (the
+`device` block in the discovery payload, see 15-mqtt-bridge.md). If an
+entity doesn't appear: check `journalctl -u pinctl | grep mqtt` for a
+connection or auth error first — a bad broker URL or password is by far the
+most common cause, and pinctl logs it rather than failing silently.
 
 ## systemd unit
 
@@ -161,6 +228,12 @@ Type=simple
 ExecStart=/usr/local/bin/pinctl -config /etc/pinctl/config.yaml
 Restart=on-failure
 RestartSec=2
+
+# Optional: MQTT_PASSWORD (see "MQTT password" above) instead of
+# mqtt.password_file. The leading "-" makes the file optional — a
+# deployment not using this path needs nothing at /etc/pinctl/pinctl.env
+# and systemd silently skips it.
+EnvironmentFile=-/etc/pinctl/pinctl.env
 
 # Identity: unprivileged user, dialout membership is what actually grants
 # serial device access (see udev section below) — there is no reason for

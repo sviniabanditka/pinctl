@@ -31,12 +31,20 @@ import (
 	"github.com/sviniabanditka/pinctl/internal/devicebus"
 	"github.com/sviniabanditka/pinctl/internal/engine"
 	"github.com/sviniabanditka/pinctl/internal/model"
+	"github.com/sviniabanditka/pinctl/internal/mqtt"
 	"github.com/sviniabanditka/pinctl/internal/store"
 )
 
 // legacyBoardID is the well-known single-board id used by v0.2/v0.3
 // deployments (internal/api's defaultBoardID) before boards.json existed.
 const legacyBoardID = "brd_local"
+
+// version is the binary's version string, reported in MQTT Home Assistant
+// discovery payloads (docs/15-mqtt-bridge.md's device.sw_version) and
+// nowhere else today. "dev" is what every non-release build reports; a
+// release build overrides it via -ldflags "-X main.version=vX.Y.Z" (see
+// .github/workflows/release.yml).
+var version = "dev"
 
 func main() {
 	configPath := flag.String("config", "", "path to config.yaml (default: /etc/pinctl/config.yaml, then ~/.pinctl/config.yaml; missing file = defaults)")
@@ -158,6 +166,20 @@ func main() {
 		closeBoard = boardMgr.Close
 	}
 
+	// The one poll driving the "devices" WS topic and the MQTT bridge
+	// (docs/15-mqtt-bridge.md's "one poll, many readers"). Built here,
+	// before engine.NewManager, so every writer — the engine, the REST
+	// manual write, the MQTT command handler — can be wrapped through the
+	// same seam below: io is reassigned to a devicebus.WrapWriter-wrapped
+	// DeviceIO, and every remaining use of io in this function (the
+	// pipeline loop, restartIfNotRunning, apiServer, the MQTT bridge) picks
+	// up the wrapped version. This is what makes output device state
+	// observable outside the engine at all — Firmata never reports an
+	// output pin back, so without this, only devicebus's own poll (inputs
+	// only) would ever publish an Update.
+	deviceBus := devicebus.New(io, st, api.DevicePollInterval)
+	io = devicebus.WrapWriter(io, deviceBus)
+
 	mgr := engine.NewManager()
 
 	deviceIndex := devicesByID(st.ListDevices())
@@ -212,15 +234,37 @@ func main() {
 	if boardMgr != nil {
 		apiServer.SetBoardManager(boardMgr)
 	}
-
-	// The one poll driving the "devices" WS topic and, once wired up
-	// (docs/15-mqtt-bridge.md), the MQTT bridge too — "one poll, many
-	// readers". Built and owned here rather than by *api.Server so a
-	// future internal/mqtt package can Subscribe to the same instance
-	// without depending on internal/api. Run under the shutdown ctx
-	// created below, alongside boardMgr.Run and the WS publishers.
-	deviceBus := devicebus.New(io, st, api.DevicePollInterval)
 	apiServer.SetDeviceBus(deviceBus)
+
+	// MQTT bridge (docs/15-mqtt-bridge.md): constructed only when enabled —
+	// "disabled means absent", no client, no goroutine, nothing. deviceBus
+	// and io are already the wrapped/shared instances every other writer
+	// uses, so the bridge's commands and every other writer's changes are
+	// indistinguishable once they reach it.
+	var mqttBridge *mqtt.Bridge
+	if cfg.MQTT.Enabled {
+		var boardStatus mqtt.BoardStatus
+		if boardMgr != nil {
+			boardStatus = managerBoardStatus{boardMgr}
+		} else {
+			boardStatus = singleBoardStatus{sess}
+		}
+		b, err := mqtt.New(cfg.MQTT, version, mqtt.Deps{
+			Store:  st,
+			Bus:    deviceBus,
+			IO:     io,
+			Boards: boardStatus,
+		})
+		if err != nil {
+			// A bridge failure must never be fatal: log it and keep
+			// serving without MQTT, per docs/15's "the bridge is never on
+			// the critical path".
+			log.Printf("pinctl: mqtt: %v", err)
+		} else {
+			mqttBridge = b
+			apiServer.SetDeviceWatcher(mqttBridge)
+		}
+	}
 
 	srv := &http.Server{
 		Addr:    cfg.HTTP.Addr,
@@ -231,6 +275,20 @@ func main() {
 	defer stop()
 
 	go deviceBus.Run(ctx)
+
+	if mqttBridge != nil {
+		go func() {
+			// Run itself only ever returns non-nil for a startup failure
+			// (e.g. the initial connect attempt errors before Run's own
+			// backoff loop takes over) or a real transport error; either
+			// way this must never take pinctl down — log and carry on
+			// serving the UI/pipelines, per docs/15's "the bridge is never
+			// on the critical path".
+			if err := mqttBridge.Run(ctx); err != nil {
+				log.Printf("pinctl: mqtt bridge: %v", err)
+			}
+		}()
+	}
 
 	if boardMgr != nil {
 		go boardMgr.Run(ctx)

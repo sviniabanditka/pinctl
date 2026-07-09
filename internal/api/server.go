@@ -51,7 +51,39 @@ type Server struct {
 	// constructing and running the bus (so internal/mqtt, docs/15-mqtt-
 	// bridge.md, can share it too); StartPublishers only subscribes.
 	bus *devicebus.Bus
+
+	// deviceWatcher is nil unless SetDeviceWatcher was called (mqtt.enabled
+	// in config.yaml). See DeviceWatcher's doc comment.
+	deviceWatcher DeviceWatcher
 }
+
+// notifyDevicesChanged tells deviceWatcher (if any) that the device set
+// changed, so it can republish/remove Home Assistant discovery configs. A
+// no-op when no DeviceWatcher was wired in (mqtt.enabled: false, or a test
+// server that never called SetDeviceWatcher).
+func (s *Server) notifyDevicesChanged() {
+	if s.deviceWatcher != nil {
+		s.deviceWatcher.DevicesChanged()
+	}
+}
+
+// DeviceWatcher is the narrow interface internal/mqtt's Bridge satisfies
+// (DevicesChanged), kept here instead of importing internal/mqtt directly —
+// internal/api must not depend on internal/mqtt (docs/15-mqtt-bridge.md's
+// "Architecture": "nothing depends on internal/mqtt; deleting the package
+// would leave a compiling binary with one dead config section"). Wired via
+// SetDeviceWatcher; nil (the default) means no MQTT bridge is running, in
+// which case the notify calls in devices.go are no-ops.
+type DeviceWatcher interface {
+	DevicesChanged()
+}
+
+// SetDeviceWatcher wires an externally-owned DeviceWatcher (in practice,
+// cmd/pinctl's *mqtt.Bridge when mqtt.enabled is true) into the Server, so
+// device create/update/delete can tell it to republish/remove Home
+// Assistant discovery configs. Safe to call once, before the server starts
+// handling requests; not safe to call concurrently with in-flight requests.
+func (s *Server) SetDeviceWatcher(w DeviceWatcher) { s.deviceWatcher = w }
 
 // SetDeviceBus wires an externally-owned *devicebus.Bus into the Server,
 // used by the "devices" WS topic instead of the internally-constructed one

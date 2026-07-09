@@ -10,6 +10,11 @@ ExecStart=/usr/local/bin/pinctl -config /etc/pinctl/config.yaml
 Restart=on-failure
 RestartSec=2
 
+# Optional: lets MQTT_PASSWORD (docs/14-deployment.md's "MQTT password")
+# come from the environment instead of mqtt.password_file. The leading "-"
+# makes the file optional — nothing here if it doesn't exist.
+EnvironmentFile=-/etc/pinctl/pinctl.env
+
 # Identity: unprivileged user, dialout membership is what actually grants
 # serial device access (see docs/14-deployment.md's udev section) — there
 # is no reason for pinctl to run as root.
