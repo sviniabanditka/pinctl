@@ -47,6 +47,6 @@ The behavior changes instantly without reflashing Arduino firmware.
 
 - Raspberry Pi
 - Arduino Uno (or compatible boards)
-- PHP / Laravel (runtime and admin UI)
+- Go / Vue 3 (runtime and admin UI)
 - Serial communication (USB)
 - Node-based pipeline engine
