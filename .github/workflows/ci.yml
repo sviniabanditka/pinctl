@@ -111,7 +111,11 @@ jobs:
         with:
           name: web-dist
           path: web/dist
-      - uses: golangci/golangci-lint-action@v6
+      # v9 of the action tracks the golangci-lint v2 line, which .golangci.yml
+      # is written for. Pin the linter itself: "latest" on the older action
+      # resolved to a v1 build compiled against Go 1.24, which refuses a
+      # module targeting Go 1.25.
+      - uses: golangci/golangci-lint-action@v9
         name: run golangci-lint
         with:
-          version: latest
+          version: v2.12.2
