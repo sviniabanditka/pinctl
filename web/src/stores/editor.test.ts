@@ -140,4 +140,63 @@ describe('editor store', () => {
     expect(store.edges.map((e) => e.id)).toEqual(['e1'])
     expect(store.dirty).toBe(true)
   })
+
+  it('updateNodeConfig() prunes an edge whose target port was renamed away (expression inputs)', () => {
+    const store = useEditorStore()
+    store.applyLoaded({
+      ...samplePipeline,
+      nodes: [
+        { id: 'src', type: 'constant', config: { kind: 'float', value: 1 }, position: { x: 0, y: 0 } },
+        {
+          id: 'n1',
+          type: 'expression',
+          config: { expression: 'a', inputs: [{ name: 'a', type: 'float64' }], outputType: 'bool' },
+          position: { x: 100, y: 0 },
+        },
+      ],
+      edges: [],
+    })
+    store.addEdge({ id: 'e1', source: 'src', sourceHandle: 'out', target: 'n1', targetHandle: 'a' })
+    store.dirty = false
+
+    // Renaming the input identifier a -> x means port "a" no longer
+    // exists; the edge wired to it must be dropped rather than left
+    // pointing at a vanished handle.
+    store.updateNodeConfig('n1', { expression: 'x', inputs: [{ name: 'x', type: 'float64' }], outputType: 'bool' })
+
+    expect(store.edges).toHaveLength(0)
+    expect(store.dirty).toBe(true)
+  })
+
+  it('updateNodeConfig() prunes an edge whose target port was removed (expression inputs)', () => {
+    const store = useEditorStore()
+    store.applyLoaded({
+      ...samplePipeline,
+      nodes: [
+        { id: 'src', type: 'constant', config: { kind: 'float', value: 1 }, position: { x: 0, y: 0 } },
+        {
+          id: 'n1',
+          type: 'expression',
+          config: {
+            expression: 'a && b',
+            inputs: [
+              { name: 'a', type: 'bool' },
+              { name: 'b', type: 'bool' },
+            ],
+            outputType: 'bool',
+          },
+          position: { x: 100, y: 0 },
+        },
+      ],
+      edges: [],
+    })
+    store.addEdge({ id: 'e1', source: 'src', sourceHandle: 'out', target: 'n1', targetHandle: 'a' })
+    store.addEdge({ id: 'e2', source: 'src', sourceHandle: 'out', target: 'n1', targetHandle: 'b' })
+    store.dirty = false
+
+    store.updateNodeConfig('n1', { expression: 'a', inputs: [{ name: 'a', type: 'bool' }], outputType: 'bool' })
+
+    expect(store.edges.map((e) => e.id)).toEqual(['e1'])
+    expect(store.dirty).toBe(true)
+  })
 })

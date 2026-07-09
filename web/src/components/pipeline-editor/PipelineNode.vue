@@ -32,6 +32,7 @@ const outputs = computed(
 )
 
 const summary = computed(() => schema.value?.summary(props.data.config, devices.devices) ?? '')
+const isExpression = computed(() => props.data.nodeType === 'expression')
 
 const errors = computed(() => editor.serverErrors[props.id] ?? [])
 const missingInputs = computed(() => editor.clientMissingInputs?.[props.id] ?? [])
@@ -65,11 +66,17 @@ function formatValue(v: boolean | number | undefined): string {
       :id="p.id"
       type="target"
       :position="Position.Left"
+      :title="p.id"
       :style="{ top: offset(i, inputs.length), background: PORT_COLORS[p.valueType] }"
     />
 
     <div class="node-title">{{ schema?.displayName ?? data.nodeType }}</div>
-    <div class="node-summary">{{ summary }}</div>
+    <div
+      class="node-summary"
+      :class="{ 'node-summary-code': isExpression, 'node-summary-empty': isExpression && summary === '(empty)' }"
+    >
+      {{ summary }}
+    </div>
 
     <div v-if="liveActive && outputs.length > 0" class="node-live-badge" :title="`tick ${editor.liveTick}`">
       <span class="live-dot" />
@@ -91,6 +98,7 @@ function formatValue(v: boolean | number | undefined): string {
       :id="p.id"
       type="source"
       :position="Position.Right"
+      :title="p.id"
       :style="{ top: offset(i, outputs.length), background: PORT_COLORS[p.valueType] }"
     />
   </div>
@@ -124,6 +132,15 @@ function formatValue(v: boolean | number | undefined): string {
 .node-summary {
   color: var(--color-text-dim);
   font-size: 11px;
+}
+
+.node-summary-code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+}
+
+.node-summary-empty {
+  font-style: italic;
+  opacity: 0.6;
 }
 
 .node-live-badge {

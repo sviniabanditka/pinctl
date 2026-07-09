@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NODE_SCHEMAS, nodeInputs, nodeOutputs, PORT_COLORS } from './nodeSchemas'
+import { EXPR_BUILTIN_NAMES, EXPR_RESERVED_NAMES, NODE_SCHEMAS, nodeInputs, nodeOutputs, PORT_COLORS } from './nodeSchemas'
 
 // Hardcoded mirror of internal/engine/registry.go's init() registrations —
 // keep this list in sync by hand whenever a node type is added/removed
@@ -21,6 +21,7 @@ const ENGINE_REGISTERED_TYPES = [
   'delay',
   'debounce',
   'edge-detect',
+  'expression',
   // Sinks
   'device-write',
   'log',
@@ -106,5 +107,83 @@ describe('nodeSchemas: delay/debounce kind-dependent port type', () => {
     const schema = NODE_SCHEMAS.debounce!
     const port = nodeOutputs(schema, { kind: 'float' })[0]!
     expect(typeof port.type === 'function' ? port.type({ kind: 'float' }, ctx) : port.type).toBe('float64')
+  })
+})
+
+describe('nodeSchemas: expression config-driven ports', () => {
+  const ctx = { deviceRole: () => undefined }
+
+  it('derives one input port per config.inputs entry, in declared order, with mapped types', () => {
+    const schema = NODE_SCHEMAS.expression!
+    const config = {
+      inputs: [
+        { name: 'a', type: 'float64' },
+        { name: 'b', type: 'bool' },
+      ],
+      outputType: 'bool',
+    }
+    const ports = nodeInputs(schema, config)
+    expect(ports.map((p) => p.id)).toEqual(['a', 'b'])
+    expect(ports.map((p) => (typeof p.type === 'function' ? p.type(config, ctx) : p.type))).toEqual([
+      'float64',
+      'bool',
+    ])
+  })
+
+  it('output port type follows config.outputType', () => {
+    const schema = NODE_SCHEMAS.expression!
+    const boolOut = nodeOutputs(schema, { outputType: 'bool' })[0]!
+    const floatOut = nodeOutputs(schema, { outputType: 'float64' })[0]!
+    expect(typeof boolOut.type === 'function' ? boolOut.type({ outputType: 'bool' }, ctx) : boolOut.type).toBe(
+      'bool',
+    )
+    expect(
+      typeof floatOut.type === 'function' ? floatOut.type({ outputType: 'float64' }, ctx) : floatOut.type,
+    ).toBe('float64')
+  })
+
+  it('ignores malformed/empty-named entries in config.inputs', () => {
+    const schema = NODE_SCHEMAS.expression!
+    const config = { inputs: [{ name: '', type: 'float64' }, { name: 'x', type: 'bool' }, {}], outputType: 'bool' }
+    const ports = nodeInputs(schema, config)
+    expect(ports.map((p) => p.id)).toEqual(['x'])
+  })
+
+  it('defaultConfig seeds one float64 input named "a" and a bool output', () => {
+    const schema = NODE_SCHEMAS.expression!
+    const config = schema.defaultConfig()
+    expect(config).toEqual({ expression: '', inputs: [{ name: 'a', type: 'float64' }], outputType: 'bool' })
+  })
+
+  it('dedupes input ports by name, keeping the first occurrence, so duplicate rows never yield duplicate port ids', () => {
+    const schema = NODE_SCHEMAS.expression!
+    const config = {
+      inputs: [
+        { name: 'a', type: 'float64' },
+        { name: 'a', type: 'bool' },
+        { name: 'b', type: 'bool' },
+      ],
+      outputType: 'bool',
+    }
+    const ports = nodeInputs(schema, config)
+    expect(ports.map((p) => p.id)).toEqual(['a', 'b'])
+    // First occurrence wins: 'a' keeps its float64 type, not the second row's bool.
+    expect(ports.map((p) => (typeof p.type === 'function' ? p.type(config, ctx) : p.type))).toEqual([
+      'float64',
+      'bool',
+    ])
+  })
+})
+
+describe('nodeSchemas: reserved expression names', () => {
+  it('matches internal/expr/ast.go builtinArity exactly', () => {
+    expect([...EXPR_BUILTIN_NAMES].sort()).toEqual(['abs', 'ceil', 'clamp', 'floor', 'max', 'min', 'round', 'sqrt'])
+  })
+
+  it('EXPR_RESERVED_NAMES is builtins plus the true/false keywords lexed by internal/expr/lexer.go', () => {
+    for (const name of EXPR_BUILTIN_NAMES) expect(EXPR_RESERVED_NAMES.has(name)).toBe(true)
+    expect(EXPR_RESERVED_NAMES.has('true')).toBe(true)
+    expect(EXPR_RESERVED_NAMES.has('false')).toBe(true)
+    expect(EXPR_RESERVED_NAMES.has('temperature')).toBe(false)
   })
 })

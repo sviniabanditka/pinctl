@@ -419,6 +419,99 @@ Emits a one-tick `true` pulse when a boolean input transitions, otherwise
   }
   ```
 
+### `expression`
+
+Evaluates a small user-written boolean/arithmetic formula against one or
+more named, statically-typed inputs, producing a single `bool` or `float64`
+output. Lets one node replace a short chain of `compare`/`scale`/`and`/
+`or`/`not` nodes when the primitive set gets tedious to wire up.
+
+- **Inputs**: one per `config.inputs[i]`, named `config.inputs[i].name`,
+  typed `config.inputs[i].type` (`"float64"` or `"bool"`) — **in the order
+  declared in `config.inputs`, not sorted**. All are required; a declared
+  input the expression never references is a validation error (see below),
+  since an unused required port would otherwise just relocate the problem
+  to a confusing "no incoming edge" error.
+- **Outputs**: `out` — `config.outputType` (`"float64"` or `"bool"`).
+- **Config**:
+  | Field | Type | Default | Notes |
+  |---|---|---|---|
+  | `expression` | string | *(required)* | Must not be empty. Supports arithmetic (`+ - * /`), comparisons (`< <= > >= == !=`), boolean operators (`&& \|\| !`), parentheses, numeric literals, the built-in functions below, and the declared input identifiers. |
+  | `inputs` | array of `{name, type}` | `[]` | Up to 32 entries. `name` must be non-empty and unique; `type` must be `"float64"` or `"bool"`. Input port order on the node mirrors this array's order. |
+  | `outputType` | `"float64"` \| `"bool"` | *(required)* | Must match the expression's inferred result type; validation error otherwise. |
+- **Reserved names**: `min`, `max`, `abs`, `clamp`, `floor`, `ceil`, `round`,
+  and `sqrt` are the 8 built-in functions available in expressions (e.g.
+  `clamp(a, 0, 1)`, `sqrt(abs(a - b))`). None of `config.inputs[i].name` may
+  use one of these 8 names — declaring an input named e.g. `min` is a
+  validation error, since the parser always resolves a bare `min(...)` call
+  as the built-in, not a hypothetical identically-named input.
+- **Behavior / edge cases**:
+  - Validated at pipeline save/enable time (see
+    [07-pipeline-engine.md](./07-pipeline-engine.md) "Validation"): the
+    expression is parsed and type-checked against the declared inputs, every
+    identifier it references must be a declared input name (undeclared
+    identifier -> validation error naming it), every declared input must be
+    referenced by the expression (unused input -> validation error naming
+    it), and its inferred result type must match `config.outputType`
+    (e.g. "expression yields float64 but outputType is bool").
+  - Stateless: evaluated fresh from its inputs every tick, exactly like
+    `compare`/`scale`/`and`/`or`/`not` — no memory across ticks.
+  - A runtime error fails that tick the same way any other node's runtime
+    error does (see [07-pipeline-engine.md](./07-pipeline-engine.md)
+    "Runtime error handling"): the tick is abandoned, and three consecutive
+    failures auto-disable the pipeline. The full set of runtime errors:
+    - division by zero (`a / 0`);
+    - modulo by zero (`a % 0`);
+    - `sqrt` of a negative number;
+    - a non-finite (`+Inf`, `-Inf`, or `NaN`) `float64` result — e.g. an
+      intermediate value overflowing `float64`'s range, or `Inf - Inf`.
+      A constant subexpression (no identifiers, e.g. `1e300 * 1e300`) that
+      would overflow is instead rejected as a **validation error** at
+      save/enable time, since it is caught once during compilation rather
+      than on every tick.
+  - Non-finite intermediate values are only ever caught when they reach the
+    node's **final** output value — an intermediate `+Inf`/`NaN` that gets
+    "absorbed" before the end (e.g. compared against, or clamped) is not
+    itself an error. Comparisons follow plain IEEE 754 float semantics:
+    any comparison against `NaN` (`<`, `<=`, `>`, `>=`, `==`) is always
+    `false`, so `NaN`s in intermediate arithmetic do not propagate as
+    errors unless they survive to the final result.
+  - **What this is not**: a total evaluator over a small, fixed grammar —
+    not a scripting language. No loops, function calls, variable
+    assignment, state, or device/network/file I/O; it can only read its
+    declared inputs and produce one output value, once per tick.
+- **Example** (the README's LDR→LED scenario, collapsed from
+  `device-read` → `compare` → `device-write` into `device-read` →
+  `expression` → `device-write`):
+  ```json
+  {
+    "id": "n14",
+    "type": "expression",
+    "config": {
+      "expression": "a < 300",
+      "inputs": [{ "name": "a", "type": "float64" }],
+      "outputType": "bool"
+    },
+    "position": { "x": 840, "y": 120 }
+  }
+  ```
+  A second example folding a compare + not + and into one node:
+  ```json
+  {
+    "id": "n17",
+    "type": "expression",
+    "config": {
+      "expression": "a < 300 && !b",
+      "inputs": [
+        { "name": "a", "type": "float64" },
+        { "name": "b", "type": "bool" }
+      ],
+      "outputType": "bool"
+    },
+    "position": { "x": 840, "y": 480 }
+  }
+  ```
+
 ---
 
 ## Sinks
@@ -516,6 +609,7 @@ pipeline behavior.
 | `delay` | transform | `in` (bool or float64) | `out` (same type as `in`) |
 | `debounce` | transform | `in` (bool or float64) | `out` (same type as `in`) |
 | `edge-detect` | transform | `in` (bool) | `out` (bool) |
+| `expression` | transform | per `config.inputs` (bool or float64, declared order) | `out` (bool or float64) |
 | `device-write` | sink | `in` (bool or float64) | — |
 | `log` | sink | `in` (bool or float64) | — |
 
@@ -526,7 +620,6 @@ pipeline behavior.
 Not specced in this document; tracked as v2+ candidates only (see
 [00-design-brief.md](./00-design-brief.md) non-goals).
 
-- **`expression`** — user-written formula/scripting node over one or more inputs; deferred until a scripting sandbox/language is chosen.
 - **`PID`** — closed-loop proportional-integral-derivative controller node for analog output control.
 - **`counter`** — accumulates a count on pulse/edge inputs, with reset input/config.
 - **`latch` / `SR`** — set-reset flip-flop node for stateful bistable logic beyond `threshold-hysteresis`.

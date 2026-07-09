@@ -143,15 +143,13 @@ auth (explicit non-goal); building it early would add a stateful concern
 someone wants pinctl reachable outside a fully trusted LAN segment (e.g.
 a shared home network, a Pi exposed via Tailscale to multiple people).
 
-**Expression node.** What: a node whose config is a small user-written
-expression (arithmetic/boolean) evaluated against its inputs, instead of
-composing primitive compare/scale/boolean nodes. Why deferred: the brief
-explicitly excludes "a scripting language inside nodes" from v0.x — it's a
-sandboxing and validation problem (what can the expression touch? how do
-errors surface?) that isn't worth solving until the primitive node set
-proves insufficient. Trigger: real pipelines in the wild routinely chain
-4+ primitive transform nodes to express one piece of logic a one-line
-expression would replace.
+**Expression node — shipped.** A node whose config is a small user-written
+expression (arithmetic/boolean) evaluated against declared, statically-typed
+inputs, instead of composing primitive compare/scale/boolean nodes. See
+[08-node-catalog.md](./08-node-catalog.md#expression) for the spec; it is a
+fixed, total, non-Turing-complete grammar over declared inputs only (no
+loops, function calls, state, or I/O), so it doesn't reopen the "scripting
+language inside nodes" non-goal the brief excludes.
 
 **Servo / I2C device roles.** What: extend the device role enum beyond
 `digital-in/out`, `analog-in`, `pwm-out` to `servo` (angle-based PWM) and

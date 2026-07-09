@@ -31,7 +31,7 @@ export interface PortTypeContext {
 /** Either a fixed port list, or one derived from the node's current config (e.g. and/or's inputCount). */
 export type PortListDef = PortDef[] | ((config: Record<string, unknown>) => PortDef[])
 
-export type FieldKind = 'string' | 'number' | 'bool' | 'enum' | 'deviceRef' | 'weekdays'
+export type FieldKind = 'string' | 'number' | 'bool' | 'enum' | 'deviceRef' | 'weekdays' | 'expression' | 'inputList'
 
 export interface FieldDef {
   key: string
@@ -45,6 +45,25 @@ export interface FieldDef {
   min?: number
   step?: number
 }
+
+/** `expression` node's config.inputs entry shape — one identifier + its type. */
+export interface ExpressionInputDef {
+  name: string
+  type: 'float64' | 'bool'
+}
+
+/** Operators/builtins accepted by internal/expr (ast.go's builtinArity + lexer.go's operator tokens) — surfaced as a helper line in the config panel, not re-derived client-side. */
+export const EXPR_OPERATORS = '+ - * / %  < <= > >= == !=  && || !'
+
+/** internal/expr/ast.go's builtinArity keys — the parser rejects an identifier whose name matches one of these. */
+export const EXPR_BUILTIN_NAMES = ['min', 'max', 'abs', 'clamp', 'floor', 'ceil', 'round', 'sqrt'] as const
+export const EXPR_BUILTINS = EXPR_BUILTIN_NAMES.join(' ')
+
+/** internal/expr/lexer.go lexes these as tTrue/tFalse keyword tokens, never as tIdent — so they can never be a valid identifier name either. */
+export const EXPR_KEYWORDS = ['true', 'false'] as const
+
+/** Single source of truth for client-side "is this name reserved" checks (docs/11-web-ui.md mirroring): builtins ∪ keywords. */
+export const EXPR_RESERVED_NAMES: ReadonlySet<string> = new Set<string>([...EXPR_BUILTIN_NAMES, ...EXPR_KEYWORDS])
 
 export interface NodeSchema {
   type: string
@@ -359,6 +378,38 @@ export const NODE_SCHEMAS: Record<string, NodeSchema> = {
     summary: (config, devices) => deviceName(devices, config.deviceId) ?? '(no device)',
   },
 
+  expression: {
+    type: 'expression',
+    displayName: 'Expression',
+    group: 'transforms',
+    description: 'Evaluates a small typed expression over its named inputs (internal/expr).',
+    // Port ids come straight from config.inputs[i].name, in declared order —
+    // no client-side expression parser needed, since ports are config-driven
+    // rather than derived from the expression text itself.
+    inputs: (config) => expressionInputPorts(config),
+    outputs: [{ id: 'out', type: (config) => (config.outputType === 'float64' ? 'float64' : 'bool') }],
+    fields: [
+      { key: 'inputs', label: 'Inputs', kind: 'inputList', default: [{ name: 'a', type: 'float64' }] },
+      {
+        key: 'outputType',
+        label: 'Output type',
+        kind: 'enum',
+        default: 'bool',
+        options: [
+          { value: 'bool', label: 'Boolean' },
+          { value: 'float64', label: 'Number' },
+        ],
+      },
+      { key: 'expression', label: 'Expression', kind: 'expression', default: '' },
+    ],
+    defaultConfig: () => ({ expression: '', inputs: [{ name: 'a', type: 'float64' }], outputType: 'bool' }),
+    summary: (config) => {
+      const text = String(config.expression ?? '').trim()
+      if (!text) return '(empty)'
+      return text.length > 28 ? `${text.slice(0, 28)}…` : text
+    },
+  },
+
   log: {
     type: 'log',
     displayName: 'Log',
@@ -390,6 +441,25 @@ function normalizeInputCount(raw: unknown): number {
 function logicInputPorts(config: Record<string, unknown>): PortDef[] {
   const n = normalizeInputCount(config.inputCount)
   return Array.from({ length: n }, (_, i) => boolPort(`in${i + 1}`, false))
+}
+
+/**
+ * Derives `expression`'s input ports from config.inputs, in declared order; port id == identifier name.
+ * Deduped by name (first occurrence wins) — while the user is mid-edit two rows can briefly share a
+ * name, and two ports with the same id would make Vue Flow's handle rendering/edge targeting ambiguous.
+ * The duplicate itself is still surfaced as a client validation error in the config panel.
+ */
+function expressionInputPorts(config: Record<string, unknown>): PortDef[] {
+  const raw = Array.isArray(config.inputs) ? (config.inputs as Partial<ExpressionInputDef>[]) : []
+  const seen = new Set<string>()
+  const out: PortDef[] = []
+  for (const i of raw) {
+    if (typeof i?.name !== 'string' || i.name.length === 0) continue
+    if (seen.has(i.name)) continue
+    seen.add(i.name)
+    out.push({ id: i.name, type: i.type === 'bool' ? 'bool' : 'float64' })
+  }
+  return out
 }
 
 export const PALETTE_GROUPS: { key: NodeSchema['group']; label: string }[] = [

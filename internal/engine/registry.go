@@ -27,6 +27,7 @@ func init() {
 	register(delayType{})
 	register(debounceType{})
 	register(edgeDetectType{})
+	register(expressionType{})
 
 	// Sinks.
 	register(deviceWriteType{})

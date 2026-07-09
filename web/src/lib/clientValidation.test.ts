@@ -100,6 +100,43 @@ describe('checkConnection', () => {
     )
     expect(result.ok).toBe(false)
   })
+
+  it('rejects a float64 source into a bool-typed expression input', () => {
+    const nodes = [
+      node('n1', 'device-read', { deviceId: 'dev_ldr' }),
+      node('n2', 'expression', {
+        expression: 'a',
+        inputs: [{ name: 'a', type: 'bool' }],
+        outputType: 'bool',
+      }),
+    ]
+    const result = checkConnection(
+      { source: 'n1', sourceHandle: 'out', target: 'n2', targetHandle: 'a' },
+      nodes,
+      [],
+      [analogDevice],
+    )
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/type mismatch/i)
+  })
+
+  it('accepts a float64 source into a float64-typed expression input', () => {
+    const nodes = [
+      node('n1', 'device-read', { deviceId: 'dev_ldr' }),
+      node('n2', 'expression', {
+        expression: 'a',
+        inputs: [{ name: 'a', type: 'float64' }],
+        outputType: 'bool',
+      }),
+    ]
+    const result = checkConnection(
+      { source: 'n1', sourceHandle: 'out', target: 'n2', targetHandle: 'a' },
+      nodes,
+      [],
+      [analogDevice],
+    )
+    expect(result.ok).toBe(true)
+  })
 })
 
 describe('findCycleNodes', () => {

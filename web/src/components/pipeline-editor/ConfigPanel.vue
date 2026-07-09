@@ -2,7 +2,15 @@
 import { computed } from 'vue'
 import { useDevicesStore } from '../../stores/devices'
 import { useEditorStore } from '../../stores/editor'
-import { NODE_SCHEMAS, WEEKDAYS } from '../../lib/nodeSchemas'
+import {
+  EXPR_BUILTIN_NAMES,
+  EXPR_BUILTINS,
+  EXPR_OPERATORS,
+  EXPR_RESERVED_NAMES,
+  NODE_SCHEMAS,
+  WEEKDAYS,
+  type ExpressionInputDef,
+} from '../../lib/nodeSchemas'
 
 const props = defineProps<{ selectedNodeId: string | null }>()
 const emit = defineEmits<{ delete: [id: string] }>()
@@ -67,6 +75,76 @@ function onWeekdayToggle(key: string, day: string, def: unknown, checked: boolea
   const config = { ...selectedNode.value.data.config, [key]: next }
   editor.updateNodeConfig(selectedNode.value.id, config)
 }
+
+// -- expression node: inputList + expression field kinds --------------------
+
+const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+function expressionInputRows(key: string): ExpressionInputDef[] {
+  const raw = fieldValue(key)
+  return Array.isArray(raw) ? (raw as ExpressionInputDef[]) : []
+}
+
+function onInputRowChange(key: string, index: number, patch: Partial<ExpressionInputDef>) {
+  if (!selectedNode.value) return
+  const rows = expressionInputRows(key).map((r, i) => (i === index ? { ...r, ...patch } : r))
+  editor.updateNodeConfig(selectedNode.value.id, { ...selectedNode.value.data.config, [key]: rows })
+}
+
+function onInputRowAdd(key: string) {
+  if (!selectedNode.value) return
+  const rows = [...expressionInputRows(key), { name: '', type: 'float64' as const }]
+  editor.updateNodeConfig(selectedNode.value.id, { ...selectedNode.value.data.config, [key]: rows })
+}
+
+function onInputRowRemove(key: string, index: number) {
+  if (!selectedNode.value) return
+  const rows = expressionInputRows(key).filter((_, i) => i !== index)
+  editor.updateNodeConfig(selectedNode.value.id, { ...selectedNode.value.data.config, [key]: rows })
+}
+
+/**
+ * Cheap client-side checks that need no expression parser (docs/11-web-ui.md
+ * client-side mirroring: parser-dependent checks are deferred to the
+ * server's POST /pipelines/validate dry run). Only covers: empty
+ * expression text, empty/duplicate/malformed-identifier/reserved-name input
+ * names. Reserved names (builtins + true/false) are the parser's own
+ * rejection list (internal/expr/ast.go's builtinArity, lexer.go's tTrue/
+ * tFalse) — mirrored here via EXPR_RESERVED_NAMES so a name like "min"
+ * fails fast instead of round-tripping through the debounced server validate.
+ */
+const expressionClientErrors = computed<string[]>(() => {
+  if (!selectedNode.value || selectedNode.value.data.nodeType !== 'expression') return []
+  const config = selectedNode.value.data.config
+  const out: string[] = []
+  const text = String(config.expression ?? '').trim()
+  if (!text) out.push('Expression is empty.')
+
+  const rows = expressionInputRows('inputs')
+  const seen = new Set<string>()
+  for (const row of rows) {
+    const name = row.name ?? ''
+    if (!name) {
+      out.push('An input has no name.')
+      continue
+    }
+    if (!IDENT_RE.test(name)) {
+      out.push(`Input name "${name}" is not a valid identifier.`)
+      continue
+    }
+    if (EXPR_RESERVED_NAMES.has(name)) {
+      const kind = (EXPR_BUILTIN_NAMES as readonly string[]).includes(name) ? 'builtin' : 'keyword'
+      out.push(`"${name}" is a reserved ${kind} name.`)
+      continue
+    }
+    if (seen.has(name)) {
+      out.push(`Duplicate input name "${name}".`)
+      continue
+    }
+    seen.add(name)
+  }
+  return out
+})
 </script>
 
 <template>
@@ -98,7 +176,7 @@ function onWeekdayToggle(key: string, day: string, def: unknown, checked: boolea
         <button class="danger" @click="emit('delete', selectedNode.id)">Delete node</button>
       </div>
 
-      <div v-if="errors.length > 0" class="issue-list error">
+      <div v-if="errors.length > 0 && selectedNode.data.nodeType !== 'expression'" class="issue-list error">
         <div v-for="(e, i) in errors" :key="i">{{ e.message }}</div>
       </div>
       <div v-if="missing.length > 0" class="issue-list warning">
@@ -144,6 +222,48 @@ function onWeekdayToggle(key: string, day: string, def: unknown, checked: boolea
             />
             {{ day }}
           </label>
+        </div>
+
+        <div v-else-if="f.kind === 'inputList'" class="input-list-field">
+          <div v-for="(row, i) in expressionInputRows(f.key)" :key="i" class="input-list-row">
+            <input
+              type="text"
+              class="input-list-name"
+              placeholder="name"
+              :value="row.name"
+              @input="onInputRowChange(f.key, i, { name: ($event.target as HTMLInputElement).value })"
+            />
+            <select
+              :value="row.type"
+              @change="onInputRowChange(f.key, i, { type: ($event.target as HTMLSelectElement).value as 'float64' | 'bool' })"
+            >
+              <option value="float64">float64</option>
+              <option value="bool">bool</option>
+            </select>
+            <button type="button" class="danger-icon" title="Remove input" @click="onInputRowRemove(f.key, i)">×</button>
+          </div>
+          <button type="button" class="add-input" @click="onInputRowAdd(f.key)">+ Add input</button>
+        </div>
+
+        <div v-else-if="f.kind === 'expression'" class="expression-field">
+          <textarea
+            :id="`f-${f.key}`"
+            class="expression-textarea"
+            rows="3"
+            spellcheck="false"
+            :value="String(fieldValue(f.key) ?? f.default)"
+            @input="onFieldInput(f.key, 'string', ($event.target as HTMLTextAreaElement).value)"
+          />
+          <p class="field-hint expression-hint">
+            Operators: <code>{{ EXPR_OPERATORS }}</code><br />
+            Builtins: <code>{{ EXPR_BUILTINS }}</code>
+          </p>
+          <div v-if="expressionClientErrors.length > 0" class="issue-list error">
+            <div v-for="(e, i) in expressionClientErrors" :key="i">{{ e }}</div>
+          </div>
+          <div v-if="errors.length > 0" class="issue-list error">
+            <div v-for="(e, i) in errors" :key="i">{{ e.message }}</div>
+          </div>
         </div>
 
         <input
@@ -225,5 +345,65 @@ function onWeekdayToggle(key: string, day: string, def: unknown, checked: boolea
 .weekday-toggle {
   font-size: 11px;
   text-transform: capitalize;
+}
+
+.input-list-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.input-list-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.input-list-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.danger-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  line-height: 1;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  cursor: pointer;
+}
+
+.add-input {
+  align-self: flex-start;
+  font-size: 12px;
+  background: none;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.expression-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.expression-textarea {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  resize: vertical;
+  min-height: 3.5em;
+}
+
+.expression-hint {
+  line-height: 1.5;
+}
+
+.expression-hint code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
 }
 </style>
