@@ -295,12 +295,6 @@ func (f *fakeIO) WriteDevice(d model.Device, v engine.Value) error {
 	return nil
 }
 
-func (f *fakeIO) writeCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.writes)
-}
-
 func (f *fakeIO) attemptCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

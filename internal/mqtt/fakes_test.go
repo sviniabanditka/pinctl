@@ -338,12 +338,6 @@ func (f *fakeBoardStatus) setConnected(boardID string, connected bool) {
 	f.connected[boardID] = connected
 }
 
-func (f *fakeBoardStatus) setFirmware(boardID, name string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.firmware[boardID] = name
-}
-
 // ---- fakeClock ----
 
 type fakeClock struct {

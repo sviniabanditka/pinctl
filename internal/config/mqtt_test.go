@@ -270,9 +270,12 @@ func TestConfig_PasswordNeverAppearsInFormattedOutput(t *testing.T) {
 		fmt.Sprintf("%v", cfg.MQTT),
 		fmt.Sprintf("%+v", cfg.MQTT),
 		fmt.Sprintf("%#v", cfg.MQTT),
-		fmt.Sprintf("%v", cfg.MQTT.Password),
-		fmt.Sprintf("%s", cfg.MQTT.Password),
-		fmt.Sprintf("%q", cfg.MQTT.Password),
+		// Pass the Secret as `any` so staticcheck's S1025 ("use String()
+		// instead of Sprintf") doesn't rewrite away the very thing under
+		// test: that every verb, not just String(), redacts.
+		fmt.Sprintf("%v", any(cfg.MQTT.Password)),
+		fmt.Sprintf("%s", any(cfg.MQTT.Password)),
+		fmt.Sprintf("%q", any(cfg.MQTT.Password)),
 		cfg.MQTT.Password.String(),
 	}
 	for _, out := range outputs {
