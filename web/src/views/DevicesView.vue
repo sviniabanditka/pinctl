@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useDevicesStore } from '../stores/devices'
+import { useBoardsStore } from '../stores/boards'
 import { pushErrorToast, pushToast } from '../composables/toast'
 import type { Device, DeviceOptions, DeviceRole } from '../api/types'
 import DeviceFormDialog from '../components/DeviceFormDialog.vue'
@@ -8,17 +9,19 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { isStaleValue } from '../lib/staleness'
 
 const devices = useDevicesStore()
+const boards = useBoardsStore()
 
 let unsubLive: (() => void) | null = null
 
 onMounted(async () => {
   unsubLive = devices.subscribeLive()
-  if (!devices.loaded) {
-    try {
-      await devices.fetch()
-    } catch (err) {
-      pushErrorToast(err)
-    }
+  const tasks: Promise<unknown>[] = []
+  if (!devices.loaded) tasks.push(devices.fetch())
+  if (!boards.loaded) tasks.push(boards.fetch())
+  try {
+    await Promise.all(tasks)
+  } catch (err) {
+    pushErrorToast(err)
   }
 })
 
@@ -41,14 +44,26 @@ function openEdit(d: Device) {
   showForm.value = true
 }
 
-async function onFormSubmit(payload: { name: string; pin: number; role: DeviceRole; options: DeviceOptions }) {
+async function onFormSubmit(payload: {
+  name: string
+  boardId: string
+  pin: number
+  role: DeviceRole
+  options: DeviceOptions
+}) {
   formBusy.value = true
   try {
     if (editing.value) {
       await devices.update(editing.value.id, { name: payload.name, options: payload.options })
       pushToast('Device updated', 'info')
     } else {
-      await devices.create({ name: payload.name, boardId: '', pin: payload.pin, role: payload.role, options: payload.options })
+      await devices.create({
+        name: payload.name,
+        boardId: payload.boardId,
+        pin: payload.pin,
+        role: payload.role,
+        options: payload.options,
+      })
       pushToast('Device created', 'info')
     }
     showForm.value = false
@@ -166,6 +181,7 @@ async function writePwm(d: Device, value: number) {
     v-if="showForm"
     :device="editing"
     :busy="formBusy"
+    :boards="boards.boards"
     @cancel="showForm = false"
     @submit="onFormSubmit"
   />

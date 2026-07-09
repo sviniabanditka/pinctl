@@ -175,6 +175,24 @@ th {
   background: color-mix(in srgb, var(--color-badge-paused) 15%, transparent);
 }
 
+/* Board statuses (docs/10-api.md's board.Status) reuse the pipeline-status
+   badge palette: connected~running, disconnected~stopped, reconnecting/
+   error map onto paused/error directly. */
+.badge.connected {
+  color: var(--color-badge-running);
+  background: color-mix(in srgb, var(--color-badge-running) 15%, transparent);
+}
+
+.badge.disconnected {
+  color: var(--color-badge-stopped);
+  background: color-mix(in srgb, var(--color-badge-stopped) 15%, transparent);
+}
+
+.badge.reconnecting {
+  color: var(--color-badge-paused);
+  background: color-mix(in srgb, var(--color-badge-paused) 15%, transparent);
+}
+
 .empty-state {
   text-align: center;
   padding: 48px 24px;

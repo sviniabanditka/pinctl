@@ -2,24 +2,38 @@
 import { computed, onMounted, onUnmounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useBoardStore } from '../stores/board'
+import { useBoardsStore } from '../stores/boards'
 import { useDevicesStore } from '../stores/devices'
 import { usePipelinesStore } from '../stores/pipelines'
 import { pushErrorToast } from '../composables/toast'
 import StatusBadge from '../components/StatusBadge.vue'
 import { isStaleValue } from '../lib/staleness'
 
+// Prefers the v0.4 /boards collection; falls back to the legacy singular
+// /board endpoint only if /boards itself is unreachable (e.g. a server
+// built before boards.go existed) — see internal/api/boards.go's
+// boardsSnapshot, which already synthesizes a single-board-mode entry
+// server-side, so in practice this fallback only fires against an old
+// backend build, not an old-but-unconfigured one.
 const board = useBoardStore()
+const boardsStore = useBoardsStore()
 const devices = useDevicesStore()
 const pipelines = usePipelinesStore()
 
 let unsubDevices: (() => void) | null = null
 let unsubPipelines: (() => void) | null = null
+let unsubBoards: (() => void) | null = null
 
 onMounted(async () => {
   unsubDevices = devices.subscribeLive()
   unsubPipelines = pipelines.subscribeLive()
   try {
-    await Promise.all([board.fetch(), devices.loaded ? Promise.resolve() : devices.fetch(), pipelines.fetch()])
+    await Promise.all([boardsStore.fetch(), devices.loaded ? Promise.resolve() : devices.fetch(), pipelines.fetch()])
+    if (boardsStore.error || boardsStore.boards.length === 0) {
+      await board.fetch()
+    } else {
+      unsubBoards = boardsStore.subscribeLive()
+    }
   } catch (err) {
     pushErrorToast(err)
   }
@@ -28,12 +42,30 @@ onMounted(async () => {
 onUnmounted(() => {
   unsubDevices?.()
   unsubPipelines?.()
+  unsubBoards?.()
 })
 
-const initialLoading = computed(() => board.loading && !board.loaded && devices.loading && !devices.loaded)
+const useLegacyBoard = computed(() => boardsStore.error || boardsStore.boards.length === 0)
+
+const initialLoading = computed(
+  () =>
+    boardsStore.loading &&
+    !boardsStore.loaded &&
+    !board.loaded &&
+    devices.loading &&
+    !devices.loaded,
+)
+
+const boardsConnected = computed(() =>
+  useLegacyBoard.value ? !!board.board?.connected : boardsStore.boards.some((b) => b.status === 'connected'),
+)
 
 const nothingConfigured = computed(
-  () => board.loaded && !board.board?.connected && devices.devices.length === 0 && pipelines.pipelines.length === 0,
+  () =>
+    (boardsStore.loaded || board.loaded) &&
+    !boardsConnected.value &&
+    devices.devices.length === 0 &&
+    pipelines.pipelines.length === 0,
 )
 </script>
 
@@ -54,16 +86,32 @@ const nothingConfigured = computed(
 
   <div v-else class="panels">
     <section class="card">
-      <h2>Board</h2>
-      <div v-if="board.loading && !board.loaded">Loading…</div>
-      <div v-else-if="!board.board" class="empty-state">No board information available.</div>
-      <div v-else class="board-summary">
-        <span class="badge" :class="board.board.connected ? 'running' : 'error'">
-          {{ board.board.connected ? 'connected' : 'disconnected' }}
-        </span>
-        <span>{{ board.board.firmware.name }} v{{ board.board.firmware.major }}.{{ board.board.firmware.minor }}</span>
-        <span class="dim">{{ board.board.port }}</span>
-      </div>
+      <h2>Boards</h2>
+      <div v-if="boardsStore.loading && !boardsStore.loaded && !board.loaded">Loading…</div>
+
+      <template v-else-if="useLegacyBoard">
+        <div v-if="!board.board" class="empty-state">No board information available.</div>
+        <div v-else class="board-summary">
+          <span class="badge" :class="board.board.connected ? 'running' : 'error'">
+            {{ board.board.connected ? 'connected' : 'disconnected' }}
+          </span>
+          <span>{{ board.board.firmware.name }} v{{ board.board.firmware.major }}.{{ board.board.firmware.minor }}</span>
+          <span class="dim">{{ board.board.port }}</span>
+        </div>
+      </template>
+
+      <template v-else>
+        <div v-if="boardsStore.boards.length === 0" class="empty-state">
+          No boards yet. <RouterLink to="/boards">Rescan</RouterLink>.
+        </div>
+        <ul v-else class="compact-list">
+          <li v-for="b in boardsStore.boards" :key="b.id">
+            <RouterLink to="/boards">{{ b.name }}</RouterLink>
+            <span class="dim">{{ b.identity.kind }}</span>
+            <StatusBadge :status="b.status" />
+          </li>
+        </ul>
+      </template>
     </section>
 
     <section class="card">

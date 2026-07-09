@@ -1,0 +1,31 @@
+[Unit]
+Description=pinctl runtime
+Documentation=https://github.com/sviniabanditka/pinctl
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pinctl -config /etc/pinctl/config.yaml
+Restart=on-failure
+RestartSec=2
+
+# Identity: unprivileged user, dialout membership is what actually grants
+# serial device access (see docs/14-deployment.md's udev section) — there
+# is no reason for pinctl to run as root.
+User=pinctl
+Group=pinctl
+SupplementaryGroups=dialout
+
+# Hardening (safe defaults for a single-purpose service; loosen only if
+# something below breaks a legitimate need):
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pinctl
+ProtectHome=true
+AmbientCapabilities=
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

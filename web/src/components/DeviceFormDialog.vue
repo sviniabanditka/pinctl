@@ -1,17 +1,28 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue'
-import type { Device, DeviceOptions, DeviceRole } from '../api/types'
+import type { BoardEntry, Device, DeviceOptions, DeviceRole } from '../api/types'
 
-const props = withDefaults(defineProps<{ device?: Device | null; busy?: boolean }>(), { busy: false })
+const props = withDefaults(
+  defineProps<{ device?: Device | null; busy?: boolean; boards?: BoardEntry[] }>(),
+  { busy: false, boards: () => [] },
+)
 const emit = defineEmits<{
   cancel: []
-  submit: [payload: { name: string; pin: number; role: DeviceRole; options: DeviceOptions }]
+  submit: [payload: { name: string; boardId: string; pin: number; role: DeviceRole; options: DeviceOptions }]
 }>()
 
 const isEdit = computed(() => !!props.device)
 
+// Multi-board mode: a real /boards collection exists, so the field is
+// shown and required. Legacy single-board mode (boards list empty — no
+// board.Manager wired in, docs/12-roadmap.md): the field is hidden
+// entirely and boardId is omitted from the submit payload, letting the
+// server's defaultBoardID fallback apply (internal/api/devices.go).
+const showBoardField = computed(() => props.boards.length > 0)
+
 const form = reactive({
   name: props.device?.name ?? '',
+  boardId: props.device?.boardId ?? props.boards[0]?.id ?? '',
   pin: props.device?.pin ?? 0,
   role: (props.device?.role ?? 'digital-in') as DeviceRole,
   pullup: props.device?.options.pullup ?? false,
@@ -41,7 +52,13 @@ function buildOptions(): DeviceOptions {
 }
 
 function onSubmit() {
-  emit('submit', { name: form.name, pin: Number(form.pin), role: form.role, options: buildOptions() })
+  emit('submit', {
+    name: form.name,
+    boardId: showBoardField.value ? form.boardId : '',
+    pin: Number(form.pin),
+    role: form.role,
+    options: buildOptions(),
+  })
 }
 </script>
 
@@ -53,6 +70,14 @@ function onSubmit() {
         <div class="field">
           <label for="dev-name">Name</label>
           <input id="dev-name" v-model="form.name" required maxlength="80" />
+        </div>
+
+        <div v-if="showBoardField" class="field">
+          <label for="dev-board">Board</label>
+          <select id="dev-board" v-model="form.boardId" required :disabled="isEdit">
+            <option v-for="b in props.boards" :key="b.id" :value="b.id">{{ b.name }}</option>
+          </select>
+          <span v-if="isEdit" class="field-hint">Board can't be changed — delete and recreate to re-point it.</span>
         </div>
 
         <div class="field">

@@ -60,6 +60,17 @@ type Port struct {
 	Name     string
 	Type     PortType
 	Required bool // only meaningful for inputs; ignored for outputs
+
+	// AnyType marks an input port that accepts either bool or float64,
+	// logging/forwarding whichever type actually arrives rather than
+	// requiring the connected edge's source type to match a fixed
+	// declaration. Only "log" uses this today (docs/08-node-catalog.md:
+	// "in — bool or float64 ... accepts either type, logs whichever
+	// arrives"). validate()'s edge type-check skips the exact-type-match
+	// rule for a port with AnyType set; Type is still populated (a
+	// placeholder) so every other code path that assumes every Port has a
+	// concrete Type keeps working.
+	AnyType bool
 }
 
 // PortSpec describes a node instance's input and output ports, resolved

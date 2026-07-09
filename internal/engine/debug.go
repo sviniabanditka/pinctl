@@ -20,6 +20,23 @@ type TickSnapshot struct {
 	// Sink nodes (zero output ports, e.g. device-write) are omitted — there
 	// is no edge value to show for them.
 	Nodes map[string]Value
+
+	// Log holds this tick's log entries, one per "log" node that decided
+	// to log this tick (per its onChangeOnly config), in evaluation order.
+	// Empty/nil on a tick with nothing to log or when nobody is subscribed
+	// (see logSink.LogEntry's doc comment) — never built just to stay
+	// empty, per the same zero-cost-when-off invariant as Nodes.
+	Log []LogEntry
+}
+
+// LogEntry is one "log" node's recorded value for a tick, per
+// docs/08-node-catalog.md's log node and the WS wire shape in
+// docs/10-api.md ({nodeId, label, value, timestamp}).
+type LogEntry struct {
+	NodeID    string
+	Label     string
+	Value     Value
+	Timestamp time.Time
 }
 
 // snapshotChanBuf is small: this is a live "debugging while the tab is

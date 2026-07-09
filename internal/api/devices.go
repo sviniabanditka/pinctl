@@ -51,6 +51,15 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	boardID := req.BoardID
 	if boardID == "" {
 		boardID = defaultBoardID
+	} else if len(s.store.ListBoards()) > 0 {
+		// Only enforced once a real boards collection exists (multi-board
+		// mode, docs/12-roadmap.md v0.4): a bare store with no registered
+		// boards yet (single-session dev mode, or a fresh test store) keeps
+		// accepting an arbitrary boardId verbatim, same as v0.2/v0.3.
+		if _, err := s.store.GetBoard(boardID); err != nil {
+			writeError(w, http.StatusBadRequest, "unknown_board", "boardId "+boardID+" does not exist")
+			return
+		}
 	}
 
 	created, err := s.store.CreateDevice(model.Device{

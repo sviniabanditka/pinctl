@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/sviniabanditka/pinctl/internal/board"
 	"github.com/sviniabanditka/pinctl/internal/boardio"
 	"github.com/sviniabanditka/pinctl/internal/engine"
 	"github.com/sviniabanditka/pinctl/internal/model"
@@ -26,7 +27,7 @@ const defaultBoardID = "brd_local"
 
 // Server holds the dependencies the v0.2 device/pipeline handlers need,
 // plus (v0.3) the WS hub and the board port/id the live publishers report
-// status against.
+// status against, plus (v0.4) the optional multi-board Manager.
 type Server struct {
 	sess    Session
 	port    string
@@ -35,7 +36,20 @@ type Server struct {
 	io      engine.DeviceIO
 	hub     *Hub
 	handler http.Handler
+
+	// boardMgr is nil in single-session dev mode (cmd/pinctl -port), in
+	// which case boards.go's handlers fall back to synthesizing a single
+	// board entry from sess/port. Set via SetBoardManager once cmd/pinctl
+	// has constructed the multi-board Manager (docs/12-roadmap.md v0.4).
+	boardMgr *board.Manager
 }
+
+// SetBoardManager wires the multi-board Manager into the Server, enabling
+// the real /api/v1/boards endpoints (list/rescan/rename) and per-board
+// unknown_board validation on device create. Safe to call once, before the
+// server starts handling requests; not safe to call concurrently with
+// in-flight requests.
+func (s *Server) SetBoardManager(mgr *board.Manager) { s.boardMgr = mgr }
 
 // ServeHTTP makes *Server itself an http.Handler (the full /api/v1 +
 // static-UI mux built by NewServer), so callers such as cmd/pinctl can hold
@@ -65,6 +79,10 @@ func NewServer(sess Session, port string, st *store.Store, mgr *engine.Manager, 
 	mux.HandleFunc("POST /api/v1/pins/{pin}", handleWritePin(sess))
 
 	s := &Server{sess: sess, port: port, store: st, mgr: mgr, io: io, hub: newHub()}
+
+	mux.HandleFunc("GET /api/v1/boards", s.handleListBoards)
+	mux.HandleFunc("POST /api/v1/boards/rescan", s.handleRescanBoards)
+	mux.HandleFunc("PATCH /api/v1/boards/{id}", s.handleUpdateBoard)
 
 	mux.HandleFunc("GET /api/v1/devices", s.handleListDevices)
 	mux.HandleFunc("POST /api/v1/devices", s.handleCreateDevice)
@@ -138,13 +156,27 @@ func (s *Server) devicesMap() map[string]model.Device {
 	return m
 }
 
-// applyPinModes best-effort applies pin modes for devices via boardio. A
-// failure (e.g. the board is dead) is logged, not returned to the HTTP
+// applyPinModes best-effort applies pin modes for devices via boardio,
+// resolving each device's session by its own BoardID when a multi-board
+// Manager is wired in (v0.4) — a single call may span several boards. A
+// failure (e.g. the board is offline) is logged, not returned to the HTTP
 // caller — device metadata is store-backed and must remain creatable/
-// editable while the board is offline; the mode gets (re)applied on the
-// next successful ApplyPinModes call (e.g. process restart).
+// editable while a board is offline; the mode gets (re)applied on that
+// board's next successful (re)connect via Manager's OnReady hook.
 func (s *Server) applyPinModes(devices ...model.Device) {
-	if err := boardio.ApplyPinModes(s.sess, devices); err != nil {
-		log.Printf("api: applying pin modes: %v", err)
+	if s.boardMgr == nil {
+		if err := boardio.ApplyPinModes(s.sess, devices); err != nil {
+			log.Printf("api: applying pin modes: %v", err)
+		}
+		return
+	}
+	for _, d := range devices {
+		sess, err := s.boardMgr.Session(d.BoardID)
+		if err != nil {
+			continue // board offline: applied on its next reconnect instead
+		}
+		if err := boardio.ApplyPinModes(sess, []model.Device{d}); err != nil {
+			log.Printf("api: applying pin mode for device %s: %v", d.ID, err)
+		}
 	}
 }

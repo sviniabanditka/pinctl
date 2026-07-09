@@ -12,6 +12,7 @@ const ws = useWsStore()
       <div class="brand">pinctl</div>
       <nav>
         <RouterLink to="/" exact-active-class="active">Dashboard</RouterLink>
+        <RouterLink to="/boards" active-class="active">Boards</RouterLink>
         <RouterLink to="/devices" active-class="active">Devices</RouterLink>
         <RouterLink to="/pipelines" active-class="active">Pipelines</RouterLink>
       </nav>

@@ -131,4 +131,58 @@ describe('findUnconnectedRequiredInputs', () => {
     const result = findUnconnectedRequiredInputs(nodes, edges)
     expect(result.n2).toBeUndefined()
   })
+
+  it('flags all n unconnected ports on an "and" node per its config.inputCount', () => {
+    const nodes = [node('n1', 'and', { inputCount: 3 })]
+    const result = findUnconnectedRequiredInputs(nodes, [])
+    expect(result.n1).toEqual(['in1', 'in2', 'in3'])
+  })
+
+  it('only flags the still-unconnected input ports on an "or" node with some connected', () => {
+    const nodes = [node('n1', 'timer'), node('n2', 'or', { inputCount: 3 })]
+    const edges = [edge('n1', 'out', 'n2', 'in2')]
+    const result = findUnconnectedRequiredInputs(nodes, edges)
+    expect(result.n2).toEqual(['in1', 'in3'])
+  })
+
+  it('defaults inputCount to 2 when omitted, per parseLogicConfig', () => {
+    const nodes = [node('n1', 'and')]
+    const result = findUnconnectedRequiredInputs(nodes, [])
+    expect(result.n1).toEqual(['in1', 'in2'])
+  })
+})
+
+describe('checkConnection: n-input ports (and/or)', () => {
+  it('connects to a specific in-N handle on a widened "and" node', () => {
+    const nodes = [node('n1', 'timer'), node('n2', 'and', { inputCount: 3 })]
+    const result = checkConnection({ source: 'n1', sourceHandle: 'out', target: 'n2', targetHandle: 'in3' }, nodes, [], [])
+    expect(result.ok).toBe(true)
+  })
+
+  it('rejects a second connection to an already-connected in-N handle', () => {
+    const nodes = [node('n1', 'timer'), node('n3', 'clock'), node('n2', 'and', { inputCount: 3 })]
+    const edges = [edge('n1', 'out', 'n2', 'in2')]
+    const result = checkConnection({ source: 'n3', sourceHandle: 'out', target: 'n2', targetHandle: 'in2' }, nodes, edges, [])
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/already has an incoming/i)
+  })
+})
+
+describe('checkConnection: AnyType (log node)', () => {
+  it('accepts a bool source connecting into log\'s AnyType "in" port', () => {
+    const nodes = [node('n1', 'timer'), node('n2', 'log')]
+    const result = checkConnection({ source: 'n1', sourceHandle: 'out', target: 'n2', targetHandle: 'in' }, nodes, [], [])
+    expect(result.ok).toBe(true)
+  })
+
+  it('accepts a float64 source connecting into log\'s AnyType "in" port', () => {
+    const nodes = [node('n1', 'device-read', { deviceId: 'dev_ldr' }), node('n2', 'log')]
+    const result = checkConnection(
+      { source: 'n1', sourceHandle: 'out', target: 'n2', targetHandle: 'in' },
+      nodes,
+      [],
+      [analogDevice],
+    )
+    expect(result.ok).toBe(true)
+  })
 })

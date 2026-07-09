@@ -127,11 +127,33 @@ func (s *Server) runDevicePoller(ctx context.Context) {
 	}
 }
 
-// runBoardPoller watches the one board.Session's Alive() state and
-// broadcasts on "boards" when it changes. v0.4's multi-board manager
-// (docs/12-roadmap.md) replaces this with a real board.Manager.Watch feed;
-// v0.3 only has the single always-open Session NewServer was built with.
+// runBoardPoller drives the "boards" WS topic. With a multi-board Manager
+// wired in (v0.4, docs/12-roadmap.md), it relays Manager.Watch's real
+// per-board connect/disconnect/error events directly — no polling needed,
+// since Manager already knows the instant a transition happens. Without one
+// (single-session dev mode), it falls back to polling the one
+// board.Session's Alive() state, same as v0.3.
 func (s *Server) runBoardPoller(ctx context.Context) {
+	if s.boardMgr != nil {
+		s.runBoardWatch(ctx)
+		return
+	}
+	s.runBoardPoll(ctx)
+}
+
+func (s *Server) runBoardWatch(ctx context.Context) {
+	events := s.boardMgr.Watch(ctx)
+	for ev := range events {
+		var port *string
+		if ev.Port != "" {
+			p := ev.Port
+			port = &p
+		}
+		s.hub.broadcast(topicBoards, boardEvent{BoardID: ev.BoardID, Status: string(ev.Status), Port: port})
+	}
+}
+
+func (s *Server) runBoardPoll(ctx context.Context) {
 	ticker := time.NewTicker(boardPollInterval)
 	defer ticker.Stop()
 

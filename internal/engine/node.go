@@ -51,11 +51,19 @@ type TickContext struct {
 // device; ConnectedInputs tells a node instance, by declared input port
 // name, whether that port has an incoming edge — needed for ports that
 // fall back to a config default when unconnected (e.g. compare.threshold,
-// the one documented exception in docs/08-node-catalog.md).
+// the one documented exception in docs/08-node-catalog.md). TickMs is the
+// owning pipeline's effective tick period (default-resolved, never 0),
+// needed by nodes whose config is specified in wall-clock ms but whose
+// behavior is implemented tick-indexed (delay's "rounded down to the
+// nearest multiple of tickMs", docs/08-node-catalog.md). NodeID is this
+// node's own id, needed by nodes whose behavior defaults from their own
+// id (log's label).
 type NodeDeps struct {
 	Devices         map[string]model.Device
 	IO              DeviceIO
 	ConnectedInputs map[string]bool
+	TickMs          int
+	NodeID          string
 }
 
 // NodeType is implemented once per catalog entry and registered in the
@@ -106,4 +114,20 @@ type Node interface {
 // runner right after a successful Eval call.
 type sinkNode interface {
 	SinkValue() (deviceID string, v Value)
+}
+
+// logSink is implemented only by the log node: since it declares zero
+// output ports, the scheduler can't learn "what (if anything) to log this
+// tick" from Eval's return value alone. LogEntry is called once per tick,
+// right after a successful Eval, regardless of whether anyone is
+// subscribed to this pipeline's debug stream — this keeps the node's
+// internal onChangeOnly state correct across a subscribe/unsubscribe
+// cycle (docs/08-node-catalog.md "onChangeOnly: true still logs the very
+// first value observed after the pipeline is enabled"). Whether the
+// returned entry is actually collected into a TickSnapshot is the
+// runner's decision, gated on subscription, per docs/07-pipeline-engine.md
+// "the engine skips building the snapshot's serialized form entirely"
+// when nobody is subscribed.
+type logSink interface {
+	LogEntry() (entry LogEntry, ok bool)
 }

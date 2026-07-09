@@ -1,0 +1,30 @@
+# Optional udev rule: pin an Arduino-class board to a stable device path
+# (/dev/pinctl-board0) instead of relying on kernel enumeration order
+# (/dev/ttyACM0, /dev/ttyACM1, ...), which can change across reboots or
+# replugs — especially with more than one board attached. See
+# docs/14-deployment.md#udev-and-serial-access for the full explanation.
+#
+# Not installed by deploy/install.sh — this is a per-board, per-operator
+# rule (it embeds one board's USB serial number), so it's opt-in.
+#
+# Setup:
+#
+#   1. Find the board's USB serial number:
+#        udevadm info -a -n /dev/ttyACM0 | grep -m1 '{serial}'
+#        # ATTRS{serial}=="85033313938351E0A162"
+#
+#   2. Copy this file to /etc/udev/rules.d/99-pinctl.rules, uncomment the
+#      line below, and replace idVendor/serial with your board's values.
+#      (idVendor=="2341" is Arduino's USB vendor ID; check yours via the
+#      udevadm command above if you're using a clone or another vendor.)
+#
+#   3. Reload rules:
+#        sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+#   4. Reference /dev/pinctl-board0 in /etc/pinctl/config.yaml's
+#      serial.allowlist instead of /dev/ttyACM0.
+#
+# For a second board, duplicate the line with a different serial and a
+# different SYMLINK (e.g. pinctl-board1).
+
+# SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{serial}=="85033313938351E0A162", SYMLINK+="pinctl-board0"

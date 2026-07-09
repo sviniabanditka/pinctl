@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useDevicesStore } from '../../stores/devices'
 import { useEditorStore } from '../../stores/editor'
-import { NODE_SCHEMAS } from '../../lib/nodeSchemas'
+import { NODE_SCHEMAS, WEEKDAYS } from '../../lib/nodeSchemas'
 
 const props = defineProps<{ selectedNodeId: string | null }>()
 const emit = defineEmits<{ delete: [id: string] }>()
@@ -26,14 +26,15 @@ function fieldValue(key: string): unknown {
 }
 
 /**
- * `constant.value`'s effective input kind depends on the sibling `kind`
- * field (bool vs. float) — the schema table only encodes a static kind per
- * field, so this one case (the only field whose widget depends on another
- * field's value in the current 4-node set) is special-cased here rather
- * than growing the table's field-kind union for a single node type.
+ * `constant.value` / `delay.initial` / `debounce.initial` all have an
+ * effective input kind that depends on a sibling `kind` config field (bool
+ * vs. float) — the schema table only encodes a static kind per field, so
+ * this "value-like field mirrors sibling kind" case is special-cased here
+ * rather than growing the table's field-kind union for what's really one
+ * pattern repeated across three node types.
  */
 function effectiveKind(f: { key: string; kind: string }): string {
-  if (selectedNode.value?.data.nodeType === 'constant' && f.key === 'value') {
+  if ((f.key === 'value' || f.key === 'initial') && selectedNode.value && 'kind' in selectedNode.value.data.config) {
     return selectedNode.value.data.config.kind === 'bool' ? 'bool' : 'number'
   }
   return f.kind
@@ -49,6 +50,21 @@ function onFieldInput(key: string, kind: string, raw: unknown) {
   } else {
     config[key] = raw
   }
+  editor.updateNodeConfig(selectedNode.value.id, config)
+}
+
+function isWeekdaySelected(key: string, day: string, def: unknown): boolean {
+  const raw = fieldValue(key)
+  const days = Array.isArray(raw) ? (raw as string[]) : Array.isArray(def) ? (def as string[]) : []
+  return days.includes(day)
+}
+
+function onWeekdayToggle(key: string, day: string, def: unknown, checked: boolean) {
+  if (!selectedNode.value) return
+  const raw = fieldValue(key)
+  const current = Array.isArray(raw) ? [...(raw as string[])] : Array.isArray(def) ? [...(def as string[])] : []
+  const next = checked ? [...new Set([...current, day])] : current.filter((d) => d !== day)
+  const config = { ...selectedNode.value.data.config, [key]: next }
   editor.updateNodeConfig(selectedNode.value.id, config)
 }
 </script>
@@ -119,10 +135,23 @@ function onFieldInput(key: string, kind: string, raw: unknown) {
           />
         </label>
 
+        <div v-else-if="f.kind === 'weekdays'" class="weekdays-field">
+          <label v-for="day in WEEKDAYS" :key="day" class="field-inline weekday-toggle">
+            <input
+              type="checkbox"
+              :checked="isWeekdaySelected(f.key, day, f.default)"
+              @change="onWeekdayToggle(f.key, day, f.default, ($event.target as HTMLInputElement).checked)"
+            />
+            {{ day }}
+          </label>
+        </div>
+
         <input
           v-else-if="effectiveKind(f) === 'number'"
           :id="`f-${f.key}`"
           type="number"
+          :min="f.min"
+          :step="f.step"
           :value="Number(fieldValue(f.key) ?? f.default)"
           @input="onFieldInput(f.key, 'number', ($event.target as HTMLInputElement).value)"
         />
@@ -185,5 +214,16 @@ function onFieldInput(key: string, kind: string, raw: unknown) {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.weekdays-field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.weekday-toggle {
+  font-size: 11px;
+  text-transform: capitalize;
 }
 </style>

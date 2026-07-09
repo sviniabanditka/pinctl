@@ -131,7 +131,7 @@ func (r *runner) run() {
 			tickNum++
 			buildSnapshot := r.hub.subscribed()
 			start := r.clock.Now()
-			failedNode, evalErr, nodeVals := r.runTick(TickContext{Tick: tickNum, Now: now}, buildSnapshot)
+			failedNode, evalErr, nodeVals, logEntries := r.runTick(TickContext{Tick: tickNum, Now: now}, buildSnapshot)
 			dur := r.clock.Now().Sub(start)
 
 			if dur > r.tickPeriod {
@@ -150,6 +150,7 @@ func (r *runner) run() {
 					Tick:       tickNum,
 					Duration:   dur,
 					Nodes:      nodeVals,
+					Log:        logEntries,
 				})
 			}
 
@@ -195,7 +196,7 @@ func (r *runner) run() {
 // allocation happens beyond what evaluation already does — per
 // docs/07-pipeline-engine.md "Debug and observability hooks": "the engine
 // skips building the snapshot's serialized form entirely" when unsubscribed.
-func (r *runner) runTick(ctx TickContext, buildSnapshot bool) (failedNode string, err error, nodeVals map[string]Value) {
+func (r *runner) runTick(ctx TickContext, buildSnapshot bool) (failedNode string, err error, nodeVals map[string]Value, logEntries []LogEntry) {
 	outputs := make(map[string][]Value, len(r.graph.Order))
 	writeIntents := make(map[string]Value, len(r.graph.Order))
 	if buildSnapshot {
@@ -214,11 +215,22 @@ func (r *runner) runTick(ctx TickContext, buildSnapshot bool) (failedNode string
 
 		out, evalErr := n.impl.Eval(ctx, in)
 		if evalErr != nil {
-			return id, fmt.Errorf("node %s: %w", id, evalErr), nil
+			return id, fmt.Errorf("node %s: %w", id, evalErr), nil, nil
 		}
 		outputs[id] = out
+
+		// Eval always runs (above), so a log node's internal onChangeOnly
+		// state stays correct across a subscribe/unsubscribe cycle; only
+		// collecting the entry into this tick's snapshot is gated on
+		// buildSnapshot, per docs/07-pipeline-engine.md's zero-cost-when-
+		// off invariant (see logSink's doc comment in node.go).
 		if buildSnapshot {
 			addSnapshotValues(nodeVals, n, out)
+			if ls, ok := n.impl.(logSink); ok {
+				if entry, logged := ls.LogEntry(); logged {
+					logEntries = append(logEntries, entry)
+				}
+			}
 		}
 
 		if sn, ok := n.impl.(sinkNode); ok {
@@ -247,5 +259,5 @@ func (r *runner) runTick(ctx TickContext, buildSnapshot bool) (failedNode string
 		r.lastWritten[deviceID] = v
 	}
 
-	return "", nil, nodeVals
+	return "", nil, nodeVals, logEntries
 }

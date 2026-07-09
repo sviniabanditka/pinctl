@@ -127,3 +127,29 @@ func newTestStore(t *testing.T) *store.Store {
 	}
 	return st
 }
+
+// newTestServerWithBoards builds a Server (single-session fakeSession, no
+// board.Manager — boardMgr stays nil) whose store already has one board
+// registered per name in names, per the v0.4 device-create boardId
+// existence check (internal/api/devices.go: "once a real boards collection
+// exists, an unknown boardId is a 400"). Returns the boards in the same
+// order as names, with their store-assigned IDs.
+func newTestServerWithBoards(t *testing.T, names ...string) (*Server, []model.Board) {
+	t.Helper()
+	st := newTestStore(t)
+	fs := newFakeSession()
+	mgr := engine.NewManager()
+	t.Cleanup(mgr.StopAll)
+	io := newFakeDeviceIO()
+	srv := NewServer(fs, "/dev/ttyACM0", st, mgr, io)
+
+	boards := make([]model.Board, len(names))
+	for i, name := range names {
+		b, err := st.CreateBoard(model.Board{Name: name, Identity: model.Identity{Kind: "port-path", Key: "/dev/fake" + name}})
+		if err != nil {
+			t.Fatalf("CreateBoard(%s): %v", name, err)
+		}
+		boards[i] = b
+	}
+	return srv, boards
+}

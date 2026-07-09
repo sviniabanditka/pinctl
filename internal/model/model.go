@@ -10,6 +10,28 @@ import (
 	"time"
 )
 
+// Identity is a board's stable hardware identity (docs/09-data-model.md
+// "Board object"), used by internal/board to re-associate a persisted Board
+// with a physical device across reconnects/reboots, independent of which
+// serial path it happens to enumerate as.
+type Identity struct {
+	Kind string `json:"kind"` // "usb-serial" (VID/PID+serial) or "port-path" (fallback)
+	Key  string `json:"key"`  // opaque, scheme-specific; unique per physical board
+}
+
+// Board is a connected (or previously-seen) microcontroller. Only identity
+// and user-facing metadata are persisted — live connection status, pin
+// capabilities, and cached pin values are runtime-only state owned by
+// internal/board (docs/09-data-model.md "Board object").
+type Board struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Identity  Identity  `json:"identity"`
+	PortHint  string    `json:"portHint,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
 // DeviceRole is the pin role a device binds (docs/09 "Device object").
 type DeviceRole string
 

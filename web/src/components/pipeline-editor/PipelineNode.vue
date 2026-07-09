@@ -4,7 +4,7 @@ import type { NodeProps } from '@vue-flow/core'
 import { Handle, Position } from '@vue-flow/core'
 import { useDevicesStore } from '../../stores/devices'
 import { useEditorStore } from '../../stores/editor'
-import { NODE_SCHEMAS, PORT_COLORS, resolvePortType } from '../../lib/nodeSchemas'
+import { NODE_SCHEMAS, nodeInputs, nodeOutputs, PORT_COLORS, resolvePortType } from '../../lib/nodeSchemas'
 import { portTypeContext } from '../../lib/clientValidation'
 import type { FlowNodeData } from '../../lib/graphMapping'
 
@@ -17,10 +17,18 @@ const schema = computed(() => NODE_SCHEMAS[props.data.nodeType])
 const ctx = computed(() => portTypeContext(devices.devices))
 
 const inputs = computed(
-  () => schema.value?.inputs.map((p) => ({ ...p, valueType: resolvePortType(p, props.data.config, ctx.value) })) ?? [],
+  () =>
+    (schema.value ? nodeInputs(schema.value, props.data.config) : []).map((p) => ({
+      ...p,
+      valueType: resolvePortType(p, props.data.config, ctx.value),
+    })) ?? [],
 )
 const outputs = computed(
-  () => schema.value?.outputs.map((p) => ({ ...p, valueType: resolvePortType(p, props.data.config, ctx.value) })) ?? [],
+  () =>
+    (schema.value ? nodeOutputs(schema.value, props.data.config) : []).map((p) => ({
+      ...p,
+      valueType: resolvePortType(p, props.data.config, ctx.value),
+    })) ?? [],
 )
 
 const summary = computed(() => schema.value?.summary(props.data.config, devices.devices) ?? '')

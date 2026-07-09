@@ -23,6 +23,7 @@ import PipelineEdge from '../components/pipeline-editor/PipelineEdge.vue'
 import NodePalette from '../components/pipeline-editor/NodePalette.vue'
 import ConfigPanel from '../components/pipeline-editor/ConfigPanel.vue'
 import EditorToolbar from '../components/pipeline-editor/EditorToolbar.vue'
+import LogPanel from '../components/pipeline-editor/LogPanel.vue'
 
 const props = defineProps<{ id: string }>()
 
@@ -268,6 +269,7 @@ const debugHintVisible = computed(() => !editor.enabled)
       <ConfigPanel :selected-node-id="selectedNodeId" @delete="deleteSelectedNode" />
     </div>
 
+    <LogPanel />
     <EditorToolbar :toggle-busy="toggleBusy" @save="onSave" @toggle-enabled="onToggleEnabled" />
   </div>
 </template>

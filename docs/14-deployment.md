@@ -44,11 +44,11 @@ curl -fsSL https://pinctl.example/install.sh | sh
 
 The script:
 
-1. Detects OS/arch (`linux/arm64` or `linux/arm`), refuses to run on
-   anything else.
-2. Downloads the matching release binary and its published checksum from
-   the GitHub release (see the `release` CI job in
-   [13-testing.md](./13-testing.md#ci)).
+1. Detects OS/arch (`linux/arm64`, `linux/armv7` (armhf), or `linux/amd64`
+   for a non-Pi Linux box), refuses to run on anything else.
+2. Downloads the matching release binary (`pinctl-linux-<arch>`) and the
+   published `checksums.txt` from the GitHub release (see the `release` CI
+   job in [13-testing.md](./13-testing.md#ci)).
 3. Verifies the checksum before installing anything — **never pipe the
    download step to `sh` without the checksum verification staying intact**
    if you're adapting the script; a corrupted or tampered binary should
@@ -151,7 +151,7 @@ deployment-oriented hardening added):
 ```ini
 [Unit]
 Description=pinctl runtime
-Documentation=https://github.com/<org>/pinctl
+Documentation=https://github.com/sviniabanditka/pinctl
 After=network.target
 Wants=network.target
 
@@ -322,12 +322,18 @@ IDE, PlatformIO — works identically):
 
 ```sh
 arduino-cli core install arduino:avr
-arduino-cli lib install Firmata
+arduino-cli lib install Firmata Servo
 arduino-cli compile --fqbn arduino:avr:uno \
     "$(arduino-cli lib list --format json | jq -r '.[] | select(.library.name=="Firmata") | .library.install_dir')/examples/StandardFirmata"
 arduino-cli upload -p /dev/ttyACM0 --fqbn arduino:avr:uno \
     "$(arduino-cli lib list --format json | jq -r '.[] | select(.library.name=="Firmata") | .library.install_dir')/examples/StandardFirmata"
 ```
+
+The `Servo` library is required alongside `Firmata`, even though the sketch
+is named `StandardFirmata` — its `.ino` includes `Servo.h` unconditionally,
+so `arduino-cli compile`/the Arduino IDE's verify step fails without it
+installed, regardless of whether the target board actually has a servo
+attached.
 
 Or, more simply, if you already have the Arduino IDE installed: open
 **File → Examples → Firmata → StandardFirmata**, select the correct board

@@ -39,10 +39,26 @@ type Graph struct {
 // validation failure, err is a ValidationErrors and Graph is nil — no
 // partial graph is ever returned, per docs/07-pipeline-engine.md's
 // all-or-nothing validation policy.
-func Compile(p model.Pipeline, devices map[string]model.Device, io DeviceIO) (*Graph, []Warning, error) {
+//
+// clk is threaded into every node's Init (docs/07-pipeline-engine.md
+// "Determinism and testing hooks": "[timing-dependent code] reads time
+// exclusively through a small Clock interface ... passed in at Node.Init");
+// production callers pass a real-clock implementation, tests pass a fake
+// they can advance under full control. Nodes that need wall-clock time at
+// Eval time (timer, clock, debounce) store the Clock handed to Init and
+// call it themselves, rather than trusting TickContext.Now (which reflects
+// the scheduler's ticker-fired timestamp, a different, only loosely
+// related time source — see docs/07-pipeline-engine.md "One tick, in
+// full").
+func Compile(p model.Pipeline, devices map[string]model.Device, io DeviceIO, clk Clock) (*Graph, []Warning, error) {
 	c, errs := validate(p, devices)
 	if len(errs) > 0 {
 		return nil, nil, ValidationErrors(errs)
+	}
+
+	tickMs := p.TickMs
+	if tickMs <= 0 {
+		tickMs = defaultTickMs
 	}
 
 	nodes := make(map[string]*nodeInstance, len(c.order))
@@ -55,7 +71,7 @@ func Compile(p model.Pipeline, devices map[string]model.Device, io DeviceIO) (*G
 			connectedInputs[in.Name] = c.connected[id][in.Name]
 		}
 
-		deps := NodeDeps{Devices: devices, IO: io, ConnectedInputs: connectedInputs}
+		deps := NodeDeps{Devices: devices, IO: io, ConnectedInputs: connectedInputs, TickMs: tickMs, NodeID: id}
 		impl, err := nt.NewInstance(n.Config, deps)
 		if err != nil {
 			return nil, nil, ValidationErrors{{NodeID: id, Msg: fmt.Sprintf("instantiate: %v", err)}}
@@ -84,11 +100,6 @@ func Compile(p model.Pipeline, devices map[string]model.Device, io DeviceIO) (*G
 		}
 	}
 
-	tickMs := p.TickMs
-	if tickMs <= 0 {
-		tickMs = defaultTickMs
-	}
-
 	g := &Graph{
 		PipelineID: p.ID,
 		TickMs:     tickMs,
@@ -97,7 +108,9 @@ func Compile(p model.Pipeline, devices map[string]model.Device, io DeviceIO) (*G
 		Warnings:   c.warnings,
 	}
 
-	clk := realClock{}
+	if clk == nil {
+		clk = realClock{}
+	}
 	for _, id := range g.Order {
 		if err := nodes[id].impl.Init(clk); err != nil {
 			return nil, nil, ValidationErrors{{NodeID: id, Msg: fmt.Sprintf("init: %v", err)}}

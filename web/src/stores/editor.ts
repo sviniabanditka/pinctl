@@ -17,11 +17,21 @@ import {
   modelNodeToFlowNode,
   nextNodeId,
 } from '../lib/graphMapping'
-import { NODE_SCHEMAS, type NodeSchema } from '../lib/nodeSchemas'
+import { NODE_SCHEMAS, nodeInputs, nodeOutputs, type NodeSchema } from '../lib/nodeSchemas'
 import { findCycleNodes, findUnconnectedRequiredInputs } from '../lib/clientValidation'
 import { useWsStore } from './ws'
 
 const VALIDATE_DEBOUNCE_MS = 400
+
+/** Cap on the in-editor live log panel's entry buffer (docs/08-node-catalog.md "log": ring-buffer, in-memory only). */
+const LIVE_LOG_CAP = 200
+
+export interface LiveLogEntry {
+  nodeId: string
+  label: string
+  value: boolean | number
+  timestamp: string
+}
 
 export const useEditorStore = defineStore('editor', {
   state: () => ({
@@ -44,6 +54,7 @@ export const useEditorStore = defineStore('editor', {
 
     liveTick: null as number | null,
     liveNodeValues: {} as Record<string, boolean | number>,
+    liveLog: [] as LiveLogEntry[],
 
     validateTimer: null as ReturnType<typeof setTimeout> | null,
     validating: false,
@@ -94,6 +105,7 @@ export const useEditorStore = defineStore('editor', {
       this.serverWarnings = []
       this.liveTick = null
       this.liveNodeValues = {}
+      this.liveLog = []
     },
 
     markDirty() {
@@ -143,6 +155,20 @@ export const useEditorStore = defineStore('editor', {
       const node = this.nodes.find((n) => n.id === id)
       if (!node) return
       node.data.config = config
+      // A config change can shrink a node's port list (e.g. and/or's
+      // inputCount) — prune edges still wired to a port that no longer
+      // exists, or they'd sit invisibly in the graph and only surface as a
+      // save-time failure.
+      const schema = NODE_SCHEMAS[node.type]
+      if (schema) {
+        const validInputs = new Set(nodeInputs(schema, config).map((p) => p.id))
+        const validOutputs = new Set(nodeOutputs(schema, config).map((p) => p.id))
+        this.edges = this.edges.filter((e) => {
+          if (e.target === id && !validInputs.has(e.targetHandle)) return false
+          if (e.source === id && !validOutputs.has(e.sourceHandle)) return false
+          return true
+        })
+      }
       this.markDirty()
     },
 
@@ -227,6 +253,16 @@ export const useEditorStore = defineStore('editor', {
       if (data.pipelineId !== this.pipelineId) return
       this.liveTick = data.tick
       this.liveNodeValues = data.nodes
+      if (data.log && data.log.length > 0) {
+        this.liveLog.push(...data.log)
+        if (this.liveLog.length > LIVE_LOG_CAP) {
+          this.liveLog.splice(0, this.liveLog.length - LIVE_LOG_CAP)
+        }
+      }
+    },
+
+    clearLog() {
+      this.liveLog = []
     },
 
     /**

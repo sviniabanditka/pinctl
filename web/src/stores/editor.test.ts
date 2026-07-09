@@ -118,4 +118,26 @@ describe('editor store', () => {
 
     expect(store.lastValidateErrors).toHaveLength(1)
   })
+
+  it('updateNodeConfig() prunes edges wired to a port removed by the new config', () => {
+    const store = useEditorStore()
+    store.applyLoaded({
+      ...samplePipeline,
+      nodes: [
+        { id: 'src', type: 'and', config: { inputCount: 2 }, position: { x: 0, y: 0 } },
+        { id: 'n1', type: 'and', config: { inputCount: 4 }, position: { x: 100, y: 0 } },
+      ],
+      edges: [],
+    })
+    store.addEdge({ id: 'e1', source: 'src', sourceHandle: 'out', target: 'n1', targetHandle: 'in1' })
+    store.addEdge({ id: 'e2', source: 'src', sourceHandle: 'out', target: 'n1', targetHandle: 'in3' })
+    store.dirty = false
+
+    // Shrinking n1's inputCount 4 -> 2 drops in3/in4; e2 (wired to in3)
+    // should be pruned while e1 (wired to the still-present in1) survives.
+    store.updateNodeConfig('n1', { inputCount: 2 })
+
+    expect(store.edges.map((e) => e.id)).toEqual(['e1'])
+    expect(store.dirty).toBe(true)
+  })
 })

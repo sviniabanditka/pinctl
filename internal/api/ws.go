@@ -332,10 +332,9 @@ func (c *wsClient) subscribePipeline(topic, pipelineID string) {
 }
 
 // pipelineTickEvent is the docs/10-api.md "pipeline:{id}" topic payload.
-// Log is always omitted in v0.3 — the log node type doesn't exist yet
-// (docs/12-roadmap.md defers it to v0.4's full node catalog), so there is
-// never anything to put in it, but the field is left in the struct (with
-// omitempty) so the shape matches docs/10-api.md exactly once log lands.
+// Log is populated from engine.TickSnapshot.Log (v0.4's "log" node,
+// docs/08-node-catalog.md), omitted (omitempty) on a tick with nothing to
+// log.
 type pipelineTickEvent struct {
 	PipelineID string         `json:"pipelineId"`
 	Tick       uint64         `json:"tick"`
@@ -368,6 +367,25 @@ func valueJSON(v engine.Value) any {
 	return v.Float
 }
 
+// snapshotLogJSON converts an engine.TickSnapshot's Log entries into the
+// wire shape docs/10-api.md's example shows: {nodeId, label, value,
+// timestamp}.
+func snapshotLogJSON(entries []engine.LogEntry) []logEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]logEntry, len(entries))
+	for i, e := range entries {
+		out[i] = logEntry{
+			NodeID:    e.NodeID,
+			Label:     e.Label,
+			Value:     valueJSON(e.Value),
+			Timestamp: e.Timestamp,
+		}
+	}
+	return out
+}
+
 func (c *wsClient) relaySnapshots(topic, pipelineID string, ch <-chan *engine.TickSnapshot, done <-chan struct{}) {
 	for {
 		select {
@@ -381,6 +399,7 @@ func (c *wsClient) relaySnapshots(topic, pipelineID string, ch <-chan *engine.Ti
 				PipelineID: pipelineID,
 				Tick:       snap.Tick,
 				Nodes:      snapshotNodesJSON(snap.Nodes),
+				Log:        snapshotLogJSON(snap.Log),
 			}})
 		}
 	}

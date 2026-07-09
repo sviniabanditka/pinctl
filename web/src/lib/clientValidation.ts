@@ -5,7 +5,7 @@
 
 import type { Device } from '../api/types'
 import type { FlowEdge, FlowNode } from './graphMapping'
-import { type PortTypeContext, type PortValueType, resolvePortType, schemaFor } from './nodeSchemas'
+import { nodeInputs, nodeOutputs, type PortTypeContext, type PortValueType, resolvePortType, schemaFor } from './nodeSchemas'
 
 export function portTypeContext(devices: Device[]): PortTypeContext {
   return {
@@ -23,7 +23,7 @@ export function nodePortType(
   if (!node) return undefined
   const schema = schemaFor(node.data.nodeType)
   if (!schema) return undefined
-  const ports = direction === 'in' ? schema.inputs : schema.outputs
+  const ports = direction === 'in' ? nodeInputs(schema, node.data.config) : nodeOutputs(schema, node.data.config)
   const port = ports.find((p) => p.id === portId)
   if (!port) return undefined
   return resolvePortType(port, node.data.config, ctx)
@@ -61,7 +61,16 @@ export function checkConnection(
   const sourceType = nodePortType(sourceNode, candidate.sourceHandle, 'out', ctx)
   const targetType = nodePortType(targetNode, candidate.targetHandle, 'in', ctx)
 
-  if (sourceType && targetType && sourceType !== targetType) {
+  // AnyType escape hatch (log's `in` port, docs/08-node-catalog.md "log":
+  // "accepts either type") — a port declared 'any' matches anything, never
+  // a mismatch.
+  if (
+    sourceType &&
+    targetType &&
+    sourceType !== targetType &&
+    sourceType !== 'any' &&
+    targetType !== 'any'
+  ) {
     return { ok: false, reason: `Type mismatch: ${sourceType} → ${targetType}` }
   }
 
@@ -126,7 +135,7 @@ export function findUnconnectedRequiredInputs(nodes: FlowNode[], edges: FlowEdge
     const schema = schemaFor(node.data.nodeType)
     if (!schema) continue
     const missing: string[] = []
-    for (const input of schema.inputs) {
+    for (const input of nodeInputs(schema, node.data.config)) {
       if (input.optional) continue
       const connected = edges.some((e) => e.target === node.id && e.targetHandle === input.id)
       if (!connected) missing.push(input.id)

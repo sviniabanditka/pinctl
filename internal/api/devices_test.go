@@ -92,19 +92,52 @@ func TestCreateDevice_PinConflict(t *testing.T) {
 }
 
 func TestCreateDevice_DifferentBoardSamePinOK(t *testing.T) {
-	h, _ := newTestServer(t)
+	srv, boards := newTestServerWithBoards(t, "Board A", "Board B")
+	boardA, boardB := boards[0].ID, boards[1].ID
 
-	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{
-		"name": "LED", "pin": 13, "role": "digital-out", "boardId": "brd_a",
+	rec := doRequest(t, srv, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "LED", "pin": 13, "role": "digital-out", "boardId": boardA,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
 	}
-	rec = doRequest(t, h, http.MethodPost, "/api/v1/devices", map[string]any{
-		"name": "LED2", "pin": 13, "role": "digital-out", "boardId": "brd_b",
+	rec = doRequest(t, srv, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "LED2", "pin": 13, "role": "digital-out", "boardId": boardB,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201 (different board, same pin ok); body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCreateDevice_UnknownBoardRejected covers the v0.4 boardId existence
+// check (docs/12-roadmap.md multi-board support): once a store has any
+// registered boards, an explicit boardId that isn't one of them is a 400
+// unknown_board, per this milestone's device-create validation.
+func TestCreateDevice_UnknownBoardRejected(t *testing.T) {
+	srv, _ := newTestServerWithBoards(t, "Board A")
+
+	rec := doRequest(t, srv, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "LED", "pin": 13, "role": "digital-out", "boardId": "brd_does_not_exist",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	er := decodeError(t, rec)
+	if er.Error.Code != "unknown_board" {
+		t.Errorf("error code = %q, want unknown_board", er.Error.Code)
+	}
+}
+
+// TestCreateDevice_KnownBoardAccepted is the positive counterpart: a
+// registered boardId is accepted.
+func TestCreateDevice_KnownBoardAccepted(t *testing.T) {
+	srv, boards := newTestServerWithBoards(t, "Board A")
+
+	rec := doRequest(t, srv, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "LED", "pin": 13, "role": "digital-out", "boardId": boards[0].ID,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

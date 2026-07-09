@@ -89,9 +89,11 @@ export interface PipelineActionResponse {
 }
 
 /**
- * GET /api/v1/board — v0.1 single-board endpoint. v0.3 is still
- * single-board (docs/12-roadmap.md), so this is the "boards" surface the UI
- * has today; there is no plural /boards collection endpoint yet.
+ * GET /api/v1/board — v0.1 single-board endpoint. Superseded by the plural
+ * /boards collection (BoardEntry below) in v0.4, but kept as the Dashboard's
+ * fallback for a server built without a multi-board Manager (single-board
+ * dev mode, docs/12-roadmap.md) — see internal/api/boards.go's
+ * boardsSnapshot doc comment.
  */
 export interface BoardInfo {
   connected: boolean
@@ -99,6 +101,35 @@ export interface BoardInfo {
   firmware: { name: string; major: number; minor: number }
   protocolVersion: string
   capabilities: { pin: number; modes: string[] }[]
+}
+
+export type BoardStatus = 'connected' | 'disconnected' | 'reconnecting' | 'error'
+
+export interface BoardIdentity {
+  kind: string
+  key: string
+}
+
+export interface BoardCapabilities {
+  digitalPins: number[]
+  analogPins: number[]
+}
+
+/** GET /api/v1/boards item shape (internal/api/boards.go's boardOut). */
+export interface BoardEntry {
+  id: string
+  name: string
+  identity: BoardIdentity
+  portHint?: string
+  status: BoardStatus
+  port: string | null
+  capabilities: BoardCapabilities | null
+}
+
+export interface BoardsTopicData {
+  boardId: string
+  status: BoardStatus
+  port: string | null
 }
 
 // --- WebSocket protocol (docs/10-api.md#websocket-apiv1ws) ---

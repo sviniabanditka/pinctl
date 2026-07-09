@@ -86,7 +86,7 @@ func (m *Manager) Start(p model.Pipeline, devices map[string]model.Device, io De
 		return nil
 	}
 
-	g, _, err := Compile(p, devices, io)
+	g, _, err := Compile(p, devices, io, m.clock)
 	if err != nil {
 		return err
 	}

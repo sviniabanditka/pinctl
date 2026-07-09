@@ -181,7 +181,7 @@ func validate(p model.Pipeline, devices map[string]model.Device) (*compiled, []V
 			errs = append(errs, ValidationError{NodeID: toNode, Msg: fmt.Sprintf("dangling edge: no input port %q", toPort)})
 			continue
 		}
-		if fromType != toPortSpec.Type {
+		if !toPortSpec.AnyType && fromType != toPortSpec.Type {
 			errs = append(errs, ValidationError{
 				NodeID: toNode,
 				Msg:    fmt.Sprintf("type mismatch: %s.%s (%s) -> %s.%s (%s)", fromNode, fromPort, fromType, toNode, toPort, toPortSpec.Type),
@@ -204,6 +204,31 @@ func validate(p model.Pipeline, devices map[string]model.Device) (*compiled, []V
 			if in.Required && !connected[id][in.Name] {
 				errs = append(errs, ValidationError{NodeID: id, Msg: fmt.Sprintf("required input %q has no incoming edge", in.Name)})
 			}
+		}
+	}
+
+	// timer.periodMs must be >= the pipeline's effective tickMs, per
+	// docs/08-node-catalog.md ("Must be >= tickMs of the owning pipeline;
+	// validation error otherwise"). Checked here, not in timerType.Ports,
+	// since Ports has no access to the pipeline's tickMs.
+	effectiveTickMs := p.TickMs
+	if effectiveTickMs <= 0 {
+		effectiveTickMs = defaultTickMs
+	}
+	for _, n := range nodesByID {
+		if n.Type != "timer" {
+			continue
+		}
+		var cfg timerConfig
+		if err := decodeStrict(n.Config, &cfg); err != nil {
+			continue // already reported via Ports()
+		}
+		periodMs := cfg.PeriodMs
+		if periodMs == 0 {
+			periodMs = defaultTimerPeriodMs
+		}
+		if periodMs < effectiveTickMs {
+			errs = append(errs, ValidationError{NodeID: n.ID, Msg: fmt.Sprintf("config.periodMs (%d) must be >= pipeline tickMs (%d)", periodMs, effectiveTickMs)})
 		}
 	}
 

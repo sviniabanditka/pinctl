@@ -46,11 +46,13 @@ const filePerm = 0o644
 // before returning; a successful call means the change is durable.
 type Store struct {
 	dir          string
+	boardsPath   string
 	devicesPath  string
 	pipelinesDir string
 	tmpDir       string
 
 	mu        sync.Mutex
+	boards    map[string]model.Board
 	devices   map[string]model.Device
 	pipelines map[string]model.Pipeline
 }
@@ -72,9 +74,11 @@ type devicesFile struct {
 func Open(dir string) (*Store, error) {
 	s := &Store{
 		dir:          dir,
+		boardsPath:   filepath.Join(dir, "boards.json"),
 		devicesPath:  filepath.Join(dir, "devices.json"),
 		pipelinesDir: filepath.Join(dir, "pipelines"),
 		tmpDir:       filepath.Join(dir, ".tmp"),
+		boards:       make(map[string]model.Board),
 		devices:      make(map[string]model.Device),
 		pipelines:    make(map[string]model.Pipeline),
 	}
@@ -86,6 +90,9 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("store: creating tmp dir: %w", err)
 	}
 
+	if err := s.loadBoards(); err != nil {
+		return nil, err
+	}
 	if err := s.loadDevices(); err != nil {
 		return nil, err
 	}
