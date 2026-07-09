@@ -37,6 +37,7 @@ flowchart LR
     subgraph Pi["Raspberry Pi — pinctl runtime (single Go binary)"]
         API["internal/api<br/>REST + WebSocket"]
         ENGINE["internal/engine<br/>pipeline scheduler + DAG evaluation"]
+        BOARDIO["internal/boardio<br/>engine.DeviceIO adapter"]
         BOARD["internal/board<br/>serial + Firmata session mgmt"]
         STORE["internal/store<br/>JSON files"]
         WEB["web/dist<br/>embed.FS"]
@@ -64,7 +65,8 @@ flowchart LR
     API --> ENGINE
     API --> STORE
     ENGINE --> STORE
-    ENGINE <--> BOARD
+    ENGINE <--> BOARDIO
+    BOARDIO <--> BOARD
 
     BOARD <--> S1
     BOARD <--> S2
@@ -87,7 +89,11 @@ The repository layout is fixed by the design brief:
 pinctl/
   cmd/pinctl/          # main
   internal/board/      # serial + firmata session mgmt
+  internal/boardio/    # adapts board.Session to engine.DeviceIO; multi-board routing
+  internal/config/     # config.yaml loading
   internal/engine/     # pipeline engine (graph, nodes, scheduler)
+  internal/expr/       # total expression evaluator (backs the expression node)
+  internal/model/      # persisted domain types shared by store, engine, api
   internal/store/      # JSON file persistence
   internal/api/        # REST + WS handlers
   web/                 # Vue 3 app (built dist embedded)
@@ -109,46 +115,63 @@ Responsibility: process entry point only — no business logic.
 Responsibility: own the physical connection to each microcontroller. Nothing above
 this package should touch a serial port directly.
 
-```go
-// Manager owns the lifecycle of all board sessions: discovery, connect,
-// reconnect-with-backoff, and hands out safe accessors to callers (the engine).
-type Manager interface {
-    // Boards returns the current known boards and their status.
-    Boards() []BoardInfo
+`internal/board.Manager` owns discovery, connect, and the per-board
+reconnect-with-backoff loop, and hands out a `*Session` per connected board
+(`Manager.Session(boardID)`, `Manager.Boards()`, `Manager.Watch(ctx)` for
+connect/disconnect/error events consumed by `internal/api`).
 
-    // Session returns the live session for a board, or ErrBoardOffline if the
-    // board is currently disconnected/reconnecting.
-    Session(boardID string) (Session, error)
+`*board.Session` (`internal/board/session.go`) is the façade over one
+connected board: a single goroutine owns the serial port and the Firmata
+protocol state machine. Its shape differs from an earlier sketch of this
+doc in three ways worth calling out, since callers reasonably expect the
+first two from a hardware-facing API:
 
-    // Watch streams board connect/disconnect/error events (for the API layer
-    // to relay over WebSocket).
-    Watch(ctx context.Context) <-chan BoardEvent
-}
+- No `context.Context` parameters on the write methods — writes are
+  synchronous calls that either land on the transport or mark the session
+  dead; there is nothing to cancel mid-flight.
+- The PWM write method is `AnalogWrite(pin int, value byte) error`, not
+  `PWMWrite`, matching Firmata's own "analog write" terminology.
+- There is no `PinState`/`PinValue` type. Reads are two separate cached-read
+  methods, `DigitalRead(pin int) (bool, error)` and
+  `AnalogRead(channel int) (int, error)`, both returning the last value the
+  read loop cached from an unsolicited Firmata report — never blocking on
+  the serial port, and returning an error if reporting was never enabled
+  for that pin/channel (`SetPinMode` first) or the session is dead.
 
-// Session is a single connected board: one goroutine owns the serial port and
-// the Firmata protocol state machine; Session is the safe façade over it.
-type Session interface {
-    BoardID() string
-    Capabilities() PinCapabilities
-
-    // DigitalWrite/PWMWrite/etc. queue a write to the board's serial goroutine
-    // and return once acknowledged or on ctx cancellation.
-    DigitalWrite(ctx context.Context, pin int, high bool) error
-    PWMWrite(ctx context.Context, pin int, value uint8) error
-
-    // PinState returns the last-known cached value for a pin (digital or
-    // analog), updated asynchronously as Firmata reports arrive. Never blocks
-    // on the serial port.
-    PinState(pin int) (PinValue, bool)
-}
-```
+`SetPinMode`, `Capabilities`, `Firmware`, `ProtocolVersion`, `Alive`,
+`SetOnReboot`, and `Close` round out the type; see `internal/board/session.go`
+for the exact signatures.
 
 - Uses `go.bug.st/serial` to open the port and a StandardFirmata client
   underneath (see [05-serial-protocol.md](./05-serial-protocol.md)).
 - Each `Session` runs exactly one goroutine that owns the port; all reads/writes
-  to it go through channels (see [Concurrency model](#concurrency-model)).
-- Maintains the reconnect-with-backoff loop per board (see
+  to it go through the session's own locking (see [Concurrency model](#concurrency-model)).
+- `board.Manager` maintains the reconnect-with-backoff loop per board (see
   [Failure modes](#failure-modes--handling)).
+
+### internal/boardio
+
+Responsibility: the adapter between the engine and the board layer. The
+engine never depends on `internal/board` directly — it depends only on its
+own `engine.DeviceIO` interface, which `boardio` implements over a
+`board.Session`.
+
+- `boardio.IO` wraps a single `Session` and implements `engine.DeviceIO`
+  (`ReadDevice`/`WriteDevice`), mapping a `model.Device`'s role
+  (`analog-in`, `digital-in`, `digital-out`, `pwm-out`) onto the matching
+  `AnalogRead`/`DigitalRead`/`DigitalWrite`/`AnalogWrite` call.
+- `boardio.MultiIO` implements the same interface for the multi-board case:
+  it routes each call to the right `Session` by looking up `device.BoardID`
+  (docs/12-roadmap.md's v0.4 multi-board support), so the engine's node
+  implementations never need to know which board a device lives on.
+- `boardio.ApplyPinModes(sess, devices)` sets each device's pin to the
+  Firmata mode its role implies (and enables the matching reporting) —
+  called at startup and on device create/update.
+- `boardio.ApplySafeValues(sess, devices)` writes each output device's
+  configured `onDisconnect: safe-value` immediately on (re)connect, before
+  any pipeline write for that device lands that tick.
+- `internal/board` itself never imports `internal/engine` or `internal/boardio`
+  — the dependency runs one way, engine → boardio → board.
 
 ### internal/engine
 
@@ -195,10 +218,13 @@ type node interface {
 
 - One scheduler goroutine per **enabled** pipeline, ticking at that pipeline's
   configured rate (default 20 ms).
-- Depends on `board.Manager` (via `Session.PinState`/`Session.DigitalWrite`/
-  `PWMWrite`) for I/O, and on `store.Store` only indirectly — the engine never
-  writes to disk; `cmd/pinctl`/`internal/api` own persistence and call
-  `Engine.Reload` after a successful `Store` write.
+- Depends on `engine.DeviceIO` for I/O — an interface implemented by
+  `internal/boardio` over a `board.Session` (`boardio.IO`) or over a
+  `board.Manager` for the multi-board case (`boardio.MultiIO`). The engine
+  never imports `internal/board` directly; `internal/boardio` is the only
+  package that does. It also depends on `store.Store` only indirectly — the
+  engine never writes to disk; `cmd/pinctl`/`internal/api` own persistence
+  and call `Engine.Reload` after a successful `Store` write.
 
 ### internal/store
 
@@ -260,12 +286,14 @@ flowchart TB
     cmd["cmd/pinctl<br/>(wiring, config, lifecycle)"]
     api["internal/api<br/>(REST + WS)"]
     engine["internal/engine<br/>(scheduler + DAG)"]
+    boardio["internal/boardio<br/>(engine.DeviceIO adapter)"]
     board["internal/board<br/>(serial + Firmata)"]
     store["internal/store<br/>(JSON files)"]
     web["web/dist<br/>(embed.FS)"]
 
     cmd --> api
     cmd --> engine
+    cmd --> boardio
     cmd --> board
     cmd --> store
     cmd --> web
@@ -275,20 +303,23 @@ flowchart TB
     api --> board
     api --> web
 
-    engine --> board
+    engine --> boardio
+    boardio --> board
 
     engine -.->|"no direct dependency;<br/>reload triggered by api after store write"| store
 ```
 
 Notes on the dependency direction:
 
-- `engine` depends on `board`, never the reverse — board sessions know nothing
-  about pipelines.
+- `engine` depends on `boardio`, never `board` directly — `internal/boardio`
+  is the only package that imports `internal/board` on the engine's behalf,
+  translating `model.Device` roles into Firmata session calls. Board sessions
+  know nothing about pipelines either way.
 - `engine` does not depend on `store`. Persistence and reload are orchestrated
   by `internal/api` (or `cmd/pinctl` at startup), keeping the engine a pure
   in-memory evaluator over whatever it was last told to `Load`.
 - `web` only ever talks to `api`; it has no visibility into `engine`, `board`,
-  or `store`.
+  `boardio`, or `store`.
 
 ## Data flow walkthroughs
 
@@ -577,3 +608,49 @@ shutdown is purely about stopping goroutines cleanly, not persisting state.
   rebuild-and-redeploy of the whole binary for any UI-only change (no
   independent frontend deploy), which is an acceptable trade-off at this
   project's scale and deployment model.
+
+### ADR-5: Two-route UI, not a screen per resource
+
+- **Decision**: The web UI (v0.5 redesign) consolidates down to two routes —
+  `/` (a home dashboard covering boards, devices, and pipelines together)
+  and `/pipelines/:id` (the full-viewport pipeline editor) — plus a command
+  palette for cross-resource actions and popovers for node/device config,
+  instead of separate list screens per resource. Old bookmarked URLs
+  (`/boards`, `/devices`, `/pipelines`) redirect home rather than 404
+  (`web/src/router/index.ts`).
+- **Context**: The original design (docs/11-web-ui.md) sketched one screen
+  per resource type, matching the REST resource split. In practice a small
+  LAN tool with tens of devices/pipelines didn't need that much navigation
+  chrome, and switching between screens broke the "glance at everything,
+  then drill into one pipeline" workflow the tool is actually used for.
+- **Consequences**: Less navigation, more information density on the home
+  view, and a command palette as the escape hatch for actions that don't
+  fit a dashboard tile. The trade-off is a home view that has to stay
+  legible as boards/devices/pipelines all grow — acceptable at MVP data
+  volumes (tens, not hundreds, of each).
+
+### ADR-6: `expression` node as a total evaluator, not an embedded scripting language
+
+- **Decision**: The `expression` node (v0.5) is backed by `internal/expr`, a
+  small dependency-free evaluator: a fixed grammar (arithmetic, comparison,
+  boolean operators, a whitelisted set of builtin functions) over declared,
+  statically-typed inputs only. No variables, assignment, loops,
+  user-defined functions, shared state, or I/O — every expression is a pure
+  function from its declared inputs to one output value, and `Compile`/`Eval`
+  are total: bounded source length, bounded nesting depth, bounded ident
+  count, with domain errors (e.g. `sqrt` of a negative number, non-finite
+  results) returned rather than panicking.
+- **Context**: The design brief's non-goals explicitly rule out "a scripting
+  language inside nodes." Composing primitive compare/scale/boolean nodes
+  for anything beyond trivial logic was proving unwieldy enough in practice
+  to justify a single expression-shaped node — but only if it didn't reopen
+  that non-goal.
+- **Consequences**: Users get arithmetic/boolean expressions without a
+  general-purpose scripting surface (no persistence of interpreter state
+  across ticks, no way to call back into the runtime, no unbounded
+  execution). The cost is a small custom lexer/parser/compiler to maintain
+  (`internal/expr`) instead of embedding an existing scripting engine — an
+  intentional trade for staying total and dependency-free. See
+  [08-node-catalog.md](./08-node-catalog.md#expression) for the node's JSON
+  schema and [00-design-brief.md](./00-design-brief.md#non-goals-v0x) for the
+  non-goal this stays inside of.

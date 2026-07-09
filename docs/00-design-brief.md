@@ -39,7 +39,11 @@ those pins, and serves a **Vue 3 web UI** with a node-based visual editor.
 pinctl/
   cmd/pinctl/          # main
   internal/board/      # serial + firmata session mgmt
+  internal/boardio/    # adapts board.Session to engine.DeviceIO; multi-board routing
+  internal/config/     # config.yaml loading (schema, defaults, search path)
   internal/engine/     # pipeline engine (graph, nodes, scheduler)
+  internal/expr/       # total expression evaluator backing the expression node
+  internal/model/      # persisted domain types shared by store, engine, api
   internal/store/      # JSON file persistence
   internal/api/        # REST + WS handlers
   web/                 # Vue 3 app (built dist embedded)
@@ -50,4 +54,8 @@ pinctl/
 
 - No cloud, no MQTT/Home Assistant (roadmap item), no auth, no multi-user,
 - No custom firmware, no OTA flashing, no realtime guarantees below tick rate,
-- No scripting language inside nodes (a `expression` node is a roadmap item).
+- No general-purpose scripting language or interpreter inside nodes — no
+  variables, assignment, loops, user-defined functions, state, or I/O. The
+  `expression` node (shipped) does not violate this: `internal/expr` is a
+  total evaluator, a pure function of its declared typed inputs against a
+  fixed builtin whitelist. See [08-node-catalog.md](./08-node-catalog.md).

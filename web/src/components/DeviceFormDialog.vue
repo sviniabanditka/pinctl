@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import type { BoardEntry, Device, DeviceOptions, DeviceRole } from '../api/types'
 
 const props = withDefaults(
@@ -33,6 +33,14 @@ const form = reactive({
 
 const isOutput = computed(() => form.role === 'digital-out' || form.role === 'pwm-out')
 const isPwm = computed(() => form.role === 'pwm-out')
+
+// `initial`/`safeValue` are a boolean for digital-out and a number for
+// pwm-out. Switching roles would otherwise hand a `false` to a number input
+// (or a duty cycle to a checkbox), so re-seed them to the new role's zero.
+watch(isPwm, (pwm) => {
+  if (typeof form.initial !== (pwm ? 'number' : 'boolean')) form.initial = pwm ? 0 : false
+  if (typeof form.safeValue !== (pwm ? 'number' : 'boolean')) form.safeValue = pwm ? 0 : false
+})
 
 function buildOptions(): DeviceOptions {
   if (form.role === 'digital-in') {

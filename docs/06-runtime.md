@@ -51,26 +51,38 @@ code, OOM).
 
 ## Startup and config loading
 
+### Flags (`cmd/pinctl`)
+
+| Flag | Meaning |
+|---|---|
+| `-config <path>` | Path to `config.yaml`. Empty (default): search `/etc/pinctl/config.yaml`, then `~/.pinctl/config.yaml`; a missing file at any of those falls back to defaults (not an error). |
+| `-listen <addr>` | Overrides `http.addr` from `config.yaml`. |
+| `-data <dir>` | Overrides `data_dir` from `config.yaml`. |
+| `-port <path>` | Dev convenience: connect to exactly this serial port (e.g. `/dev/ttyACM0`), bypassing discovery and the serial allowlist entirely — no `board.Manager`, no reconnect loop, no `boards.json`. Omitting it (the production path) lets `config.yaml`'s `serial.allowlist` and the multi-board `board.Manager` drive connection. |
+
 On startup pinctl:
 
-1. Parses `-config <path>` (default `/etc/pinctl/config.yaml`).
+1. Parses flags (above) and loads config from `-config` (or the default
+   search path).
 2. Loads and validates the YAML config (schema below). Invalid/missing
    required fields → fail fast with a clear error and non-zero exit; this is
    the *one* place startup is allowed to abort, because there is no safe
    partial-config state to run in.
-3. Ensures the data directory exists (creates it on first run in dev mode).
-4. Initializes structured logging at the configured level.
-5. Loads device and pipeline definitions from the data directory (see
+3. Opens the device/pipeline store, creating the data directory on first run.
+4. Loads device and pipeline definitions from the data directory (see
    [09-data-model.md](./09-data-model.md)) — a definition that fails to parse
    or validate is skipped with a logged error, **not** a fatal startup error
    (see "Error philosophy").
-6. Opens configured serial ports and starts a Firmata session per board.
-   A board that fails to open (unplugged, wrong permissions, not in the
-   allowlist) is marked `disconnected`; its pipelines pause (see
+5. Without `-port`: starts `board.Manager`, which opens every allowlisted
+   serial port it can and starts a Firmata session per board, with its own
+   reconnect-with-backoff loop for the rest. With `-port`: opens exactly one
+   board directly, no `Manager`. Either way, a board that fails to open
+   (unplugged, wrong permissions, not in the allowlist) is marked
+   `disconnected`; its pipelines pause (see
    [07-pipeline-engine.md](./07-pipeline-engine.md)) rather than blocking
    startup.
-7. Starts the pipeline scheduler for each enabled pipeline.
-8. Starts the HTTP server (REST + WebSocket + embedded static UI) on the
+6. Starts every enabled pipeline's scheduler.
+7. Starts the HTTP server (REST + WebSocket + embedded static UI) on the
    configured port.
 
 ### Config schema
@@ -85,7 +97,7 @@ in dev), per the brief's fixed decision. Fields:
 | `serial.allowlist` | []string | `[]` (empty = allow any) | Serial device paths pinctl is permitted to open, e.g. `/dev/ttyACM0`. Empty list means no restriction; a non-empty list rejects any board not on it. |
 | `serial.baud` | int | `57600` | Baud rate for Firmata sessions (brief fixes this at Firmata's default). |
 | `log.level` | string | `info` | One of `debug`, `info`, `warn`, `error`. |
-| `log.format` | string | `json` | One of `json`, `text`. `text` is for local dev readability; `json` for production/log aggregation. |
+| `log.format` | string | `text` | One of `json`, `text`. `text` is for local dev readability; `json` for production/log aggregation. |
 
 Full example:
 
@@ -111,43 +123,44 @@ catching typos in hand-edited config beats silently ignoring them.
 
 ## Logging strategy
 
-pinctl uses Go's standard `log/slog` for all logging — no third-party logging
-dependency, consistent with the "one artifact, minimal dependencies"
-philosophy.
+pinctl logs through Go's standard `log` package (`log.Printf`/`log.Fatalf`) —
+no third-party logging dependency, consistent with the "one artifact, minimal
+dependencies" philosophy. Every call site prefixes its message by hand (e.g.
+`"pinctl: board %s: ..."`, `"board: %s rebooted, ..."`) rather than emitting
+key-value attributes; there is no per-component child logger and no `log/slog`
+usage anywhere in the codebase today.
 
-- **Structured, not string-formatted.** Every log line carries key-value
-  attributes (`board_id`, `pipeline_id`, `node_id`, `port`, `err`, ...)
-  rather than being interpolated into a message string. This keeps logs
-  greppable and machine-parseable when `log.format: json`.
-- **One logger, contextual children.** A root `*slog.Logger` is constructed
-  at startup from `log.level`/`log.format`; packages that need logging derive
-  a child via `logger.With("component", "board")`,
-  `logger.With("component", "engine", "pipeline_id", id)`, etc., so every line
-  is traceable to its subsystem without repeating fields at each call site.
-- **Levels:**
-  - `debug` — per-tick node evaluation detail (only useful when actively
-    debugging a pipeline; never on by default because of volume).
-  - `info` — lifecycle events: board connected/disconnected, pipeline
-    enabled/disabled/reloaded, server started.
-  - `warn` — recoverable per-pipeline/per-board problems: pipeline paused
-    because its board disconnected, a tick overrun, a definition skipped at
-    load.
-  - `error` — internal faults worth operator attention that don't stop the
-    runtime: a serial write failure, an unexpected panic recovered in a
-    pipeline tick.
-- **No log-based control flow.** Logs are for humans and dashboards; the
-  event bus (below) is the mechanism other components and the API use to
-  react to state changes.
+- **`log.level`/`log.format` are parsed and defaulted (`info`/`text`) by
+  `internal/config` but not yet consulted anywhere else** — nothing filters
+  by level and nothing switches output format; every `log.Printf` call
+  always fires, always as an interpolated text line to stderr. Structured,
+  leveled, JSON-capable logging (as originally sketched here) is not
+  implemented; treat `log.level`/`log.format` as reserved config fields for
+  now.
+- **No log-based control flow.** Logs are for humans; the event bus (below)
+  is the mechanism other components and the API use to react to state
+  changes.
+- In practice, lifecycle events (board connect/disconnect/reboot, pipeline
+  start/restart, server start/shutdown) and internal faults (serial write
+  failures, config/store errors) are what gets logged — see
+  `cmd/pinctl/main.go` and `internal/board/session.go` for the current set
+  of call sites.
 
 ## Package-by-package description
 
-Matches the brief's planned repository layout:
+Matches the shipped repository layout (see
+[00-design-brief.md](./00-design-brief.md#repository-layout-planned) and
+[03-architecture.md](./03-architecture.md#component-breakdown)):
 
 ```
 pinctl/
   cmd/pinctl/          # main
   internal/board/      # serial + firmata session mgmt
+  internal/boardio/    # adapts board.Session to engine.DeviceIO; multi-board routing
+  internal/config/     # config.yaml loading
   internal/engine/     # pipeline engine (graph, nodes, scheduler)
+  internal/expr/       # total expression evaluator (backs the expression node)
+  internal/model/      # persisted domain types shared by store, engine, api
   internal/store/      # JSON file persistence
   internal/api/        # REST + WS handlers
   web/                 # Vue 3 app (built dist embedded)
@@ -155,19 +168,36 @@ pinctl/
 ```
 
 - **`cmd/pinctl`** — process entrypoint only: flag parsing, config loading,
-  constructing and wiring the `board`, `engine`, `store`, and `api` packages,
-  installing signal handlers, and running until shutdown. Contains no
-  business logic.
+  constructing and wiring the `board`, `boardio`, `engine`, `store`, and
+  `api` packages, installing signal handlers, and running until shutdown.
+  Contains no business logic.
 - **`internal/board`** — owns serial port lifecycle and Firmata protocol
-  sessions (`go.bug.st/serial` per the brief). One `Board` per configured
-  serial port: connect/reconnect, pin capability discovery, reading/writing
-  pin state, translating Firmata events into the internal event bus. Also
-  enforces the serial allowlist from config.
+  sessions (`go.bug.st/serial` per the brief). One `Session` per connected
+  board: connect/reconnect (via `board.Manager`), pin capability discovery,
+  reading/writing pin state, mid-session reboot detection. Also enforces the
+  serial allowlist from config.
+- **`internal/boardio`** — adapts `internal/board`'s `Session` to
+  `engine.DeviceIO`, mapping a `model.Device`'s role onto the matching
+  Firmata pin operation; routes by `device.BoardID` for the multi-board case
+  (`boardio.MultiIO`). The engine depends only on `internal/boardio`, never
+  on `internal/board` directly.
+- **`internal/config`** — loads and validates `config.yaml` (schema below),
+  with documented defaults and a fixed search order when no `-config` path
+  is given.
 - **`internal/engine`** — the pipeline engine: graph representation, topo
-  sort/validation, the node interface and built-in node implementations, and
-  the per-pipeline ticker/scheduler. Reads device values through `board`,
-  never talks to serial directly. See
-  [07-pipeline-engine.md](./07-pipeline-engine.md) for the full design.
+  sort/validation, the node interface and built-in node implementations
+  (including the `expression` node, backed by `internal/expr`), and the
+  per-pipeline ticker/scheduler. Reads/writes device values through
+  `engine.DeviceIO` (implemented by `internal/boardio`), never talks to
+  serial directly. See [07-pipeline-engine.md](./07-pipeline-engine.md) for
+  the full design.
+- **`internal/expr`** — a small, dependency-free, total expression
+  evaluator over declared typed inputs, used by the engine's `expression`
+  node. No variables, loops, user-defined functions, state, or I/O — see
+  [03-architecture.md, ADR-6](./03-architecture.md#adr-6-expression-node-as-a-total-evaluator-not-an-embedded-scripting-language).
+- **`internal/model`** — the persisted domain types (`Board`, `Device`,
+  `Pipeline`, `Node`, `Edge`) shared by `store`, `engine`, and `api`, whose
+  JSON shapes follow [09-data-model.md](./09-data-model.md).
 - **`internal/store`** — JSON file persistence for device and pipeline
   definitions under `data_dir`. Owns atomic writes (write-temp-then-rename),
   schema versioning/migration (see below), and load-time validation before

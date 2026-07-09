@@ -51,7 +51,7 @@ the brief's domain model). The subset `internal/board` implements:
 
 | Message | Direction | Wire form | Purpose |
 |---|---|---|---|
-| Protocol Version Query / Report | agent → runtime (auto on boot) | `0xF9 <major> <minor>` | First bytes the board sends after reset; used to detect "board is alive and speaking Firmata" |
+| Protocol Version Query / Report | runtime → agent (query) / agent → runtime (reply, also sent unprompted on boot) | query: `0xF9`; reply: `0xF9 <major> <minor>` | `internal/board` actively sends the query at handshake and waits for the reply — see [Session lifecycle](#session-lifecycle) for why it doesn't just wait for the boot-time report — and used again mid-session to detect an unsolicited reboot report |
 | Report Firmware (sysex) | runtime ↔ agent | `0xF0 0x79 ... 0xF7` | Firmware name + version string; logged for diagnostics, not required for operation |
 | Capability Query / Response (sysex) | runtime → agent → runtime | `0xF0 0x6B ... 0xF7` / `0xF0 0x6C ... 0xF7` | Enumerates, per pin, which modes it supports (input, output, analog, PWM, etc.) — drives `PinCapabilities` |
 | Analog Mapping Query / Response (sysex) | runtime → agent → runtime | `0xF0 0x69 ... 0xF7` / `0xF0 0x6A ... 0xF7` | Maps Firmata pin numbers to analog channel numbers (`A0` → channel 0, etc.) |
@@ -111,12 +111,27 @@ the session accounts for this before attempting the handshake.
 
 ### 3. Handshake
 
-- Wait (bounded timeout, see table below) for the board to spontaneously emit
-  its **Protocol Version** report (`0xF9 <major> <minor>`) — StandardFirmata
-  sends this once on boot, unprompted.
+- Actively send a **Protocol Version** query (`0xF9`, single byte, no
+  payload) and wait (bounded timeout, see table below) for the board's
+  reply (`0xF9 <major> <minor>`), rather than passively waiting for
+  StandardFirmata's unsolicited boot-time report. This is deliberate:
+  opening `/dev/cu.*` on macOS does not assert DTR, so the board never
+  resets on open and its boot-time report — if the board had reset earlier
+  for some other reason — may have already been sent and lost before
+  pinctl started listening. Querying explicitly works regardless of whether
+  the port open actually reset the MCU.
 - Send **Report Firmware** query; read the sysex reply (firmware name +
   version) for logging/diagnostics.
-- If no Protocol Version report arrives within the timeout, or the major
+- Every step of the handshake (version, firmware, and — below — capability
+  and analog-mapping queries) waits for a reply **of the expected type
+  specifically**, skipping (not failing on) any other message that arrives
+  first: a board that *did* just reset volunteers its own unprompted
+  version and firmware reports back to back, so e.g. the version-query wait
+  may see the board's boot-time version report before (or instead of) the
+  reply to pinctl's own query — either is a valid answer to accept, and any
+  unrelated message in between is skipped until one of the awaited type
+  arrives.
+- If no Protocol Version reply arrives within the timeout, or the major
   version is unsupported, the session fails to `permanently-failed` for this
   connect attempt and the reconnect loop applies backoff as usual (a
   misflashed or non-Firmata device on an allowlisted port shouldn't be
@@ -291,7 +306,7 @@ identity as a whole.
 
 | Condition | Detection | Handling |
 |---|---|---|
-| Handshake timeout (no Protocol Version report) | No `0xF9` within ~3 s of port open (see [boot delay](#error-handling) below — timeout must exceed it) | Fail this connect attempt; `board.Manager` applies reconnect backoff |
+| Handshake timeout (no reply to a query) | No `0xF9` reply to the active Protocol Version query (or no reply to a later handshake query) within ~3 s of sending it (see [boot delay](#error-handling) below — timeout must exceed it) | Fail this connect attempt; `board.Manager` applies reconnect backoff |
 | Unsupported protocol version | Parsed `0xF9` major `<` 2 | Fail permanently for this port (not retried on backoff — a config/hardware mismatch, not a transient fault) until the operator intervenes (e.g. re-flash) |
 | Malformed / unrecognized message | A status byte that doesn't match any known Firmata message, or a sysex block missing its `0xF7` terminator | Log at debug level, discard bytes up to the next plausible status byte (top bit set), and continue — Firmata gives no way to know a frame boundary was missed other than resyncing on the next byte that looks like a status byte; this is the "silent misparse risk" flagged as a v2 trigger criterion |
 | Serial I/O error (unplug) | Read/write returns an OS error from `go.bug.st/serial` | Transition to `offline` immediately; start reconnect loop |
@@ -348,7 +363,12 @@ messages the read loop never sees in steady state.
 - StandardFirmata emits the version and firmware reports back-to-back on
   boot, so `Session` single-flights reboot handling: a second signal
   arriving while a reconfiguration triggered by the first is still in
-  flight is ignored, coalescing the pair into exactly one
+  flight is ignored, coalescing the pair into exactly one reconfiguration.
+  The single-flight flag is held for a further **~500 ms cooldown** after
+  the reconfiguration work itself finishes, not just while it's in
+  flight — on real hardware the reconfiguration can complete before the
+  trailing report of the version/firmware pair arrives, so an in-flight-only
+  guard would let that straggler trigger a second, redundant
   reconfiguration.
 - The callback itself is where pin modes, analog/digital reporting, and
   onDisconnect safe-values get re-applied — those are per-device state
@@ -369,9 +389,14 @@ messages the read loop never sees in steady state.
 Runtime (session goroutine)                Arduino (StandardFirmata)
         |                                          |
         |--- open serial port (57600, 8N1) ------->|
-        |                                    (DTR toggle resets MCU)
+        |                          (DTR toggle resets MCU, if the platform asserts DTR on open)
         |                                          | bootloader ~2s, then StandardFirmata boots
-        |<---------- 0xF9 <major> <minor> ---------| (Protocol Version, unprompted)
+        |         (fixed boot delay, ~2s)          |
+        |--- 0xF9 (Report Version query) ---------->|
+        |<---------- 0xF9 <major> <minor> ---------| (Protocol Version reply — may arrive
+        |                                          |  ahead of/instead of the query's own
+        |                                          |  reply if the board just reset and
+        |                                          |  volunteered it unprompted)
         |--- 0xF0 0x79 0xF7 (Report Firmware) ----->|
         |<-- 0xF0 0x79 <ver> <name...> 0xF7 --------|
         |--- 0xF0 0x6B 0xF7 (Capability Query) ---->|

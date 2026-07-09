@@ -172,12 +172,12 @@ constant threshold, producing a `bool`.
 - **Config**:
   | Field | Type | Default | Notes |
   |---|---|---|---|
-  | `op` | `"gt"` \| `"lt"` \| `"eq"` \| `"gte"` \| `"lte"` | `"gt"` | |
+  | `op` | `"gt"` \| `"lt"` \| `"eq"` \| `"gte"` \| `"lte"` \| `"neq"` | `"gt"` | |
   | `threshold` | `float64` | `0` | Used only when the `threshold` input port is unconnected. |
 - **Behavior / edge cases**:
-  - `eq` compares with an implementation-defined small epsilon (`1e-9`) to
-    avoid float equality flakiness — exposed as a fixed constant, not
-    user-configurable in the MVP.
+  - `eq`/`neq` compare with an implementation-defined small epsilon
+    (`1e-9`) to avoid float equality flakiness — exposed as a fixed
+    constant, not user-configurable in the MVP.
   - If both the `threshold` input **and** `config.threshold` are absent
     (input unconnected, config field omitted), the default `0` is used —
     this is the one source node input allowed to fall back to a config

@@ -290,11 +290,11 @@ GitHub Actions, one workflow per concern:
 
 | Job | What it does |
 |---|---|
-| `go-test` | `go vet ./...`, `go test ./...` (race detector on) on `linux/amd64` — the fast, everyday feedback loop. |
-| `go-build-cross` | `GOOS=linux GOARCH=arm64 go build ./...` and `GOARCH=arm GOARM=7 go build ./...` — compile-only checks (no test execution; no arm64/arm runners) that the two production targets (`02-requirements.md` FR-DEPLOY-1) actually build. |
-| `golangci-lint` | Standard Go linting (`golangci-lint run`), config committed at the repo root. |
+| `go-test` | `gofmt -l .` (fails if anything is unformatted), `go vet ./...`, `go test -race ./...`, and a plain host `go build ./...` — the fast, everyday feedback loop, on `linux/amd64`. |
+| `go-build-cross` | Matrix of three compile-only checks (no test execution; no arm64/arm runners) that `go build -o /dev/null ./cmd/pinctl` succeeds for each: `linux/arm64`, `linux/arm` with `GOARM=7`, and `linux/amd64` — the release binaries' targets (`02-requirements.md` FR-DEPLOY-1). |
+| `golangci-lint` | Standard Go linting (`golangci-lint run`), config committed at the repo root. Linter version is pinned to `v2.12.2` via `golangci/golangci-lint-action@v9`'s `version` input — `latest` on this action previously resolved to a v1 build compiled against Go 1.24, which refuses to run against a module targeting Go 1.25 and can't parse the repo's v2-format `.golangci.yml`. |
 | `web-build` | `npm ci && npm run build` in `web/` — catches TypeScript/build errors; also `npm run test` (Vitest) for the frontend unit suite. |
-| `release` | Tag-triggered: builds the frontend, embeds `web/dist` via `embed.FS`, cross-compiles the `linux/arm64` and `linux/arm` binaries, and attaches them (plus checksums) to the GitHub release. See [14-deployment.md](./14-deployment.md) for the install script that consumes these artifacts. |
+| `release` | Tag-triggered: builds the frontend, embeds `web/dist` via `embed.FS`, cross-compiles three binaries (`linux/arm64`, `linux/arm` with `GOARM=7`, `linux/amd64`), and attaches them plus a `checksums.txt` to the GitHub release. There is deliberately no ARMv6 asset — the `armv7` binary is built with `GOARM=7` and faults on an ARMv6 core (Pi Zero/Zero W/Pi 1); see [14-deployment.md](./14-deployment.md#supported-targets) for that platform's local-build path. See [14-deployment.md](./14-deployment.md) for the install script that consumes these artifacts. |
 
 All jobs above `release` run on every PR; `release` runs only on tag push.
 There is no hardware-in-the-loop job — see

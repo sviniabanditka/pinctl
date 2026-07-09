@@ -15,8 +15,8 @@ inside a pipeline body.
 - [Boards](#boards)
 - [Devices](#devices)
 - [Pipelines](#pipelines)
-- [System](#system)
 - [WebSocket](#websocket-apiv1ws)
+- [v0.1 raw-pin endpoints](#v01-raw-pin-endpoints)
 - [Static UI serving](#static-ui-serving)
 
 ## General conventions
@@ -57,14 +57,30 @@ inside a pipeline body.
   |---|---|---|
   | `200 OK` | success, body returned | GET, PATCH/PUT that return the updated resource, actions like enable/disable |
   | `201 Created` | resource created, body is the new resource | POST creating a board-independent resource (device, pipeline) |
-  | `204 No Content` | success, no body | DELETE |
+  | `202 Accepted` | request accepted, work happens async | `POST /boards/rescan` |
+  | `204 No Content` | success, no body | DELETE, `POST /devices/{id}/write` |
   | `400 Bad Request` | malformed request or validation failure (schema, referential integrity, DAG) | invalid body, see [09-data-model.md](./09-data-model.md#validation-rules) |
   | `404 Not Found` | referenced resource ID does not exist | GET/PATCH/DELETE on unknown `{id}` |
-  | `409 Conflict` | request is well-formed but violates a state constraint | deleting a referenced device; manual write while an enabled pipeline drives the target device |
+  | `409 Conflict` | request is well-formed but violates a state constraint | pin already claimed by another device; deleting a referenced device; manual write while an enabled pipeline drives the target device |
   | `500 Internal Server Error` | unexpected runtime fault | should not routinely happen; logged with a stack trace per [06-runtime.md](./06-runtime.md#error-philosophy) |
+  | `503 Service Unavailable` | board session is dead | v0.1 raw-pin endpoints against a disconnected session |
 
-  `code` values used across the API: `not_found`, `validation_error`,
-  `conflict`, `internal_error`.
+  `code` values used across the API:
+
+  | `code` | Status | Condition |
+  |---|---|---|
+  | `bad_request` | `400` | Malformed request body outside the JSON-decode/validation path (e.g. `POST /devices/{id}/write` body isn't `{"value": ...}`, or the value's type doesn't match the device's role; v0.1 raw-pin endpoints' bad pin/mode/body). |
+  | `validation_error` | `400` | A device/pipeline body fails store- or engine-level validation (empty `name`; a pipeline that fails `engine.Validate` — dangling edge, cycle, type mismatch, etc.). |
+  | `not_found` | `404` | Referenced `{id}` (device, pipeline, board) does not exist; also the catch-all JSON 404 for an unmatched `/api/*` path. |
+  | `conflict` | `409` | Device create/update targets a pin another device on the same board already claims. |
+  | `device_in_use` | `409` | `DELETE /devices/{id}` on a device still referenced by a pipeline's nodes. |
+  | `device_driven_by_pipeline` | `409` | `POST /devices/{id}/write` while an enabled pipeline has a `device-write` node targeting this device. |
+  | `unknown_board` | `400` | `POST /devices` with a `boardId` that doesn't match any known board (multi-board mode only). |
+  | `unknown_pin` | `404` | v0.1 pin endpoints: pin has no analog channel (`?analog=true`), or `board.ErrUnknownPin`. |
+  | `unsupported_mode` | `409` | v0.1 `SetPinMode` with a mode the pin doesn't support (`board.ErrUnsupportedMode`). |
+  | `session_dead` | `503` | v0.1 endpoints called against a session that's no longer alive (`board.ErrSessionDead`). |
+  | `no_cached_value` | `404` | v0.1 read endpoints before any value has been cached for the pin (`board.ErrNoCachedValue`). |
+  | `internal_error` | `500` | Unexpected runtime fault (unmapped store/board error). |
 
 ## Boards
 
@@ -91,7 +107,8 @@ from `board.Manager.Boards()` (see [03-architecture.md](./03-architecture.md#int
       "portHint": "/dev/ttyACM0",
       "status": "connected",
       "port": "/dev/ttyACM0",
-      "capabilities": { "digitalPins": [0,1,2,3,4,5,6,7,8,9,10,11,12,13], "analogPins": [0,1,2,3,4,5] }
+      "firmware": { "name": "StandardFirmata", "major": 2, "minor": 5 },
+      "capabilities": { "digitalPins": [0,1,2,3,4,5,6,7,8,9,10,11,12,13], "analogPins": [0,1,2,3,4,5], "pwmPins": [3,5,6,9,10,11] }
     },
     {
       "id": "brd_9zq3v7ab4c",
@@ -100,6 +117,7 @@ from `board.Manager.Boards()` (see [03-architecture.md](./03-architecture.md#int
       "portHint": "/dev/ttyACM1",
       "status": "disconnected",
       "port": null,
+      "firmware": null,
       "capabilities": null
     }
   ]
@@ -108,8 +126,13 @@ from `board.Manager.Boards()` (see [03-architecture.md](./03-architecture.md#int
 
 `status` is one of `connected`, `disconnected`, `reconnecting`, `error`
 (matches the board state-change event in
-[06-runtime.md](./06-runtime.md#internal-event-bus)). `port`/`capabilities`
-are only populated while `connected`.
+[06-runtime.md](./06-runtime.md#internal-event-bus)). `port`/`firmware`/
+`capabilities` are only populated while `connected` — `firmware` comes from
+the live Firmata session (name/major/minor reported at handshake, see
+[05-serial-protocol.md](./05-serial-protocol.md#session-lifecycle)), not from
+`boards.json`, so it is `null` whenever the board isn't currently connected.
+`capabilities.pwmPins` lists the subset of `digitalPins` that reported PWM
+support.
 
 `POST /api/v1/boards/rescan` — no body. Triggers `board.Manager` to attempt a
 fresh connect pass over the serial allowlist immediately (rather than waiting
@@ -132,7 +155,10 @@ observe results via `GET /boards` or the `boards` WebSocket topic.
   "name": "Arduino Uno (workbench)",
   "identity": { "kind": "usb-serial", "key": "VID_2341:PID_0043:SN_8503…" },
   "portHint": "/dev/ttyACM0",
-  "status": "connected"
+  "status": "connected",
+  "port": "/dev/ttyACM0",
+  "firmware": { "name": "StandardFirmata", "major": 2, "minor": 5 },
+  "capabilities": { "digitalPins": [0,1,2,3,4,5,6,7,8,9,10,11,12,13], "analogPins": [0,1,2,3,4,5], "pwmPins": [3,5,6,9,10,11] }
 }
 ```
 
@@ -189,9 +215,8 @@ not an edit"); `PATCH` requests that include either field return `400`.
 // response 409
 {
   "error": {
-    "code": "conflict",
-    "message": "device is referenced by 1 pipeline",
-    "details": { "pipelineIds": ["pl_k2n8h5wtxy"] }
+    "code": "device_in_use",
+    "message": "store: device dev_k2n8h5wtxy: device is referenced by a pipeline"
   }
 }
 ```
@@ -218,18 +243,16 @@ tells the caller which pipeline to disable first.
 { "value": true }
 ```
 
-```json
-// response 200 (device is not driven by any enabled pipeline)
-{ "id": "dev_k2n8h5wtxy", "value": true, "writtenAt": "2026-01-04T12:00:00Z" }
+```
+// response 204 (device is not driven by any enabled pipeline) — no body
 ```
 
 ```json
 // response 409 (an enabled pipeline drives this device)
 {
   "error": {
-    "code": "conflict",
-    "message": "device is driven by an enabled pipeline",
-    "details": { "pipelineId": "pl_k2n8h5wtxy", "pipelineName": "Porch light at dusk" }
+    "code": "device_driven_by_pipeline",
+    "message": "device is driven by enabled pipeline pl_k2n8h5wtxy; disable it first"
   }
 }
 ```
@@ -343,10 +366,11 @@ but likely unintended, e.g. two `device-write` nodes targeting the same
 `deviceId` (allowed per [08-node-catalog.md](./08-node-catalog.md#device-write)
 and [09-data-model.md](./09-data-model.md#validation-rules)) — the editor
 renders these as inline warnings rather than save-blocking errors. `warnings`
-may be an empty array or omitted when there are none. `PUT /pipelines/{id}`
-runs the same validation before persisting and returns `warnings` alongside
-the saved pipeline for the same reason — a save is not rejected for
-warnings-only results, but the editor still needs to show them.
+may be an empty array or omitted when there are none. `POST /pipelines` and
+`PUT /pipelines/{id}` both run the same validation before persisting and
+return `warnings` alongside the saved pipeline for the same reason — a save
+is not rejected for warnings-only results, but the editor still needs to
+show them.
 
 `POST /api/v1/pipelines/{id}/enable` / `.../disable` — no body, response is
 the updated summary:
@@ -357,36 +381,6 @@ the updated summary:
 
 Disabling a pipeline that's already disabled (or enabling one already
 enabled) is idempotent — `200` with the current state, not an error.
-
-## System
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/v1/system` | Version, uptime, config summary. |
-
-```json
-{
-  "version": "0.3.0",
-  "commit": "a1b2c3d",
-  "uptimeSeconds": 143207,
-  "goVersion": "go1.23.4",
-  "os": "linux/arm64",
-  "config": {
-    "httpAddr": ":8080",
-    "dataDir": "/var/lib/pinctl",
-    "serialBaud": 57600,
-    "serialAllowlist": ["/dev/ttyACM0", "/dev/ttyUSB0"],
-    "logLevel": "info"
-  },
-  "counts": { "boards": 2, "devices": 7, "pipelines": 3, "pipelinesEnabled": 2 }
-}
-```
-
-`config` is a read-only summary of the effective `/etc/pinctl/config.yaml`
-(see [06-runtime.md](./06-runtime.md#config-schema)) for support/debugging —
-there is no endpoint to change config at runtime; config is file-only and
-requires a restart, consistent with "invalid/missing config is the one place
-startup is allowed to abort" from the runtime doc.
 
 ## WebSocket `/api/v1/ws`
 
@@ -530,6 +524,32 @@ Invalid subscribe (unknown pipeline):
 On shutdown, the server closes every WebSocket cleanly (normal close frame,
 not a dropped connection) as part of the graceful shutdown sequence in
 [06-runtime.md](./06-runtime.md#graceful-shutdown).
+
+## v0.1 raw-pin endpoints
+
+Alongside the device/pipeline API above, the server still serves the
+original v0.1 walking-skeleton endpoints (`internal/api/api.go`,
+`internal/api/handlers.go`), unchanged. These predate the device model
+entirely: no `boardId`/`deviceId`, no store, no pipeline — just a direct
+read/write against whatever single `board.Session` the process was started
+against. They exist as a bench/debug surface for curl-level testing against
+a board, not something the UI or any documented client is expected to build
+on for device/pipeline work; kept because they're cheap to keep and useful
+for poking at a board directly.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/board` | Connection status, firmware, protocol version, and raw pin capabilities for the single session the process was started against. |
+| `POST` | `/api/v1/pins/{pin}/mode` | Set a pin's mode directly (`{"mode": "input"\|"output"\|"analog"\|"pwm"\|...}`). |
+| `GET` | `/api/v1/pins/{pin}` | Read a pin. Digital by default; add `?analog=true` to read via the pin's analog channel instead. |
+| `POST` | `/api/v1/pins/{pin}` | Write a pin (`{"value": true\|false}` for digital, `{"value": 0-255, "pwm": true}` for PWM). |
+
+`GET /api/v1/board` is also the fallback `GET /api/v1/boards` (plural, the
+v0.2+ endpoint above) uses when no multi-board `board.Manager` has been
+wired in (`Server.SetBoardManager` never called — the single-session
+`cmd/pinctl -port` dev-mode path): rather than 404, it synthesizes a
+single-entry board list from the same `sess`/`port` this endpoint reports
+against.
 
 ## Static UI serving
 

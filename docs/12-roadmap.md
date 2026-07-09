@@ -20,14 +20,15 @@ calendar attached to these; they are ordered by dependency (you can't build
 the engine before you can talk to a board, you can't build a UI before the
 engine has something to visualize).
 
-| Milestone | Goal |
-|---|---|
-| [v0.1](#v01--walking-skeleton) | Prove the serial/Firmata path works end to end, no engine, no UI. |
-| [v0.2](#v02--engine--minimal-node-set) | Pipelines execute and persist, still no UI (API/CLI only). |
-| [v0.3](#v03--web-ui-editor) | Vue Flow editor with live values — the product becomes usable by a non-developer. |
-| [v0.4 — MVP](#v04--mvp) | Everything in [02-requirements.md](./02-requirements.md)'s MVP scope table, installable and documented. |
+| Milestone | Goal | Status |
+|---|---|---|
+| [v0.1](#v01--walking-skeleton--shipped) | Prove the serial/Firmata path works end to end, no engine, no UI. | Shipped |
+| [v0.2](#v02--engine--minimal-node-set--shipped) | Pipelines execute and persist, still no UI (API/CLI only). | Shipped |
+| [v0.3](#v03--web-ui-editor--shipped) | Vue Flow editor with live values — the product becomes usable by a non-developer. | Shipped |
+| [v0.4 — MVP](#v04--mvp--shipped) | Everything in [02-requirements.md](./02-requirements.md)'s MVP scope table, installable and documented. | Shipped |
+| [v0.5](#v05--expression-node--ui-redesign--shipped) | `expression` node, UI redesign (two routes, command palette, popovers, live traces), board-reboot detection fix. | Shipped in `v0.5.0` |
 
-### v0.1 — walking skeleton
+### v0.1 — walking skeleton — shipped
 
 **Goal:** confirm the riskiest assumption first — that a Raspberry Pi can
 reliably drive a StandardFirmata Arduino over serial from Go — before any
@@ -49,7 +50,7 @@ Done when:
 - Unplugging the board during a session doesn't crash the process (bare
   error return is acceptable here — the reconnect loop lands in v0.4).
 
-### v0.2 — engine + minimal node set
+### v0.2 — engine + minimal node set — shipped
 
 **Goal:** the tick-based DAG engine exists and pipelines are persisted, still
 without a UI — API and JSON files are the only interface.
@@ -74,7 +75,7 @@ Done when:
 - Engine simulation tests (see [13-testing.md](./13-testing.md)) cover the
   four node types with a fake board.
 
-### v0.3 — web UI editor
+### v0.3 — web UI editor — shipped
 
 **Goal:** replace hand-authored JSON with the Vue Flow visual editor and make
 pipeline state observable live, closing the loop for a non-developer user.
@@ -96,7 +97,7 @@ Done when:
 - Closing and reopening the browser tab reconnects the WebSocket and
   resumes live updates without a page-breaking error.
 
-### v0.4 — MVP
+### v0.4 — MVP — shipped
 
 **Goal:** everything promised in [02-requirements.md](./02-requirements.md)'s
 MVP scope table is implemented, documented, and installable by someone who
@@ -129,6 +130,41 @@ Done when:
   left in the [backlog](#post-mvp-v1x-backlog) below.
 - A fresh Raspberry Pi OS install can go from `curl | sh` to a working
   pipeline using only the README and [14-deployment.md](./14-deployment.md).
+
+**What's still open against this milestone's own done-criteria:** the
+`curl | sh` install path (`deploy/install.sh`) has never been exercised on a
+real, freshly-imaged Raspberry Pi — only `go build`/dev workflows and the
+manual HIL checklist against a directly-wired Uno have been run. The manual
+hardware-in-the-loop checklist in
+[13-testing.md](./13-testing.md#hardware-in-the-loop-manual-not-ci) is itself
+unrun as a tracked release task. Everything else in the MVP scope table is implemented
+and covered by automated tests; this is a "someone needs to actually do it,"
+not a "something is missing," gap.
+
+### v0.5 — expression node + UI redesign — shipped
+
+**Goal:** ship the `expression` node the backlog below always scoped as an
+option, and consolidate the web UI around the workflow people actually use
+it for. Tagged `v0.5.0`.
+
+Scope:
+
+- `internal/expr`: a total expression evaluator (arithmetic, comparison,
+  boolean operators, a whitelisted builtin set) over declared, statically
+  typed inputs, wired into the engine as the `expression` node
+  (`internal/engine/nodes_expression.go`). See
+  [08-node-catalog.md](./08-node-catalog.md#expression) and
+  [03-architecture.md, ADR-6](./03-architecture.md#adr-6-expression-node-as-a-total-evaluator-not-an-embedded-scripting-language)
+  for why this doesn't reopen the "no scripting language" non-goal.
+- Web UI redesign: consolidated down to two routes (a home dashboard, the
+  full-viewport pipeline editor), a command palette for cross-resource
+  actions, popover-based node/device config, and live trace overlays on the
+  graph — see
+  [03-architecture.md, ADR-5](./03-architecture.md#adr-5-two-route-ui-not-a-screen-per-resource).
+- Fix: mid-session board reboot detection (`board.Session.SetOnReboot`), so
+  a board that resets without the serial fd erroring is correctly
+  reconfigured (pin modes, reporting, safe values) instead of silently
+  running with stale Firmata state.
 
 ## Post-MVP v1.x backlog
 

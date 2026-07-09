@@ -162,7 +162,7 @@ tests as the project is implemented.
 | Boards supported | Arduino Uno/Nano (ATmega328P), multiple boards per Pi | Other Firmata-capable boards (should work, untested) |
 | Device roles | `digital-in`, `digital-out`, `analog-in`, `pwm-out` | `servo`, `i2c` |
 | Pipeline engine | Tick-based DAG evaluation, default 20 ms | Push/event-driven evaluation |
-| Node catalog | Sources (device read, constant, timer/clock), transforms (compare, threshold+hysteresis, scale/map, AND/OR/NOT, delay, debounce, edge-detect), sinks (device write, log) | `expression`/scripting node |
+| Node catalog | Sources (device read, constant, timer/clock), transforms (compare, threshold+hysteresis, scale/map, AND/OR/NOT, delay, debounce, edge-detect, **expression** — shipped post-MVP in v0.5), sinks (device write, log) | — |
 | Persistence | JSON files under `/var/lib/pinctl/` or `~/.pinctl/` | SQLite / database (only if history/metrics land) |
 | API | REST (CRUD) + WebSocket (live values, pipeline state, editor debugging) | — |
 | Web UI | Vue 3 + Vite + Pinia + Vue Flow, embedded static build | — |

@@ -16,7 +16,7 @@ import { api } from '../api/client'
 import { pushErrorToast, pushToast } from '../composables/toast'
 import { ApiError } from '../api/client'
 import { checkConnection, nodePortType, portTypeContext } from '../lib/clientValidation'
-import { NODE_SCHEMAS, PALETTE_GROUPS, PORT_COLORS, nodeInputs, nodeOutputs, resolvePortType, schemaFor, type NodeSchema } from '../lib/nodeSchemas'
+import { NODE_SCHEMAS, PALETTE_GROUPS, PORT_COLORS, nodeInputs, nodeOutputs, resolvePortType, type NodeSchema } from '../lib/nodeSchemas'
 import type { PipelineActionResponse, PipelinesTopicData, ValidationIssue } from '../api/types'
 import PipelineNode from '../components/pipeline-editor/PipelineNode.vue'
 import PipelineEdge from '../components/pipeline-editor/PipelineEdge.vue'
@@ -34,7 +34,7 @@ const ws = useWsStore()
 const nodeTypes = Object.fromEntries(Object.keys(NODE_SCHEMAS).map((t) => [t, markRaw(PipelineNode)]))
 const edgeTypes = { pinctl: markRaw(PipelineEdge) }
 
-const { project, screenToFlowCoordinate, vueFlowRef, viewport, onConnect } = useVueFlow()
+const { screenToFlowCoordinate, vueFlowRef, viewport, onConnect } = useVueFlow()
 
 const selectedNodeId = ref<string | null>(null)
 const toggleBusy = ref(false)
@@ -347,22 +347,6 @@ function onSelectErrorNode(id: string) {
   selectedNodeId.value = id
 }
 
-function onDragOver(ev: DragEvent) {
-  ev.preventDefault()
-  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move'
-}
-
-function onDrop(ev: DragEvent) {
-  const type = ev.dataTransfer?.getData('application/pinctl-node-type')
-  if (!type || !schemaFor(type)) return
-  const bounds = vueFlowRef.value?.getBoundingClientRect()
-  const point = project({
-    x: ev.clientX - (bounds?.left ?? 0),
-    y: ev.clientY - (bounds?.top ?? 0),
-  })
-  addNodeAt(type, point)
-}
-
 function deleteSelectedNode(id: string) {
   editor.removeNode(id)
   if (selectedNodeId.value === id) selectedNodeId.value = null
@@ -415,7 +399,7 @@ const debugHintVisible = computed(() => !editor.enabled)
     />
 
     <div class="editor-body">
-      <div class="canvas-wrapper" @dragover="onDragOver" @drop="onDrop">
+      <div class="canvas-wrapper">
         <div v-if="debugHintVisible" class="debug-hint">Enable the pipeline to see live values.</div>
         <div v-else-if="pipelineStatus && pipelineStatus.status !== 'running'" class="debug-hint warn">
           {{ pipelineStatus.status }}<template v-if="pipelineStatus.detail"> — {{ pipelineStatus.detail }}</template>
