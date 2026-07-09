@@ -11,6 +11,20 @@ by the pinctl runtime and configured through a web-based visual editor.
 
 This makes hardware behavior fully configurable without recompiling or flashing firmware.
 
+## Status
+
+pinctl is in early development. The current milestone is the **v0.1 walking
+skeleton**: raw pin control over a REST API against a StandardFirmata board,
+proving the serial path end to end. There's no engine, no persistence, and
+no web UI yet — `curl` is the only "editor" for now.
+
+```bash
+go build -o pinctl ./cmd/pinctl && ./pinctl -port /dev/ttyACM0
+curl -X POST localhost:8422/api/v1/pins/13/mode -d '{"mode":"output"}'
+curl -X POST localhost:8422/api/v1/pins/13 -d '{"value":true}'
+curl localhost:8422/api/v1/pins/13
+```
+
 ## Features
 
 - Visual pipeline editor (node-based)
