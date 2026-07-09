@@ -25,6 +25,15 @@ type identityOut struct {
 type capabilitiesOut struct {
 	DigitalPins []int `json:"digitalPins"`
 	AnalogPins  []int `json:"analogPins"`
+	PWMPins     []int `json:"pwmPins"`
+}
+
+// firmwareOut is present only while a board is connected: the firmware
+// name and version come from the live Firmata session, not from boards.json.
+type firmwareOut struct {
+	Name  string `json:"name"`
+	Major int    `json:"major"`
+	Minor int    `json:"minor"`
 }
 
 type boardOut struct {
@@ -34,6 +43,7 @@ type boardOut struct {
 	PortHint     string           `json:"portHint,omitempty"`
 	Status       string           `json:"status"`
 	Port         *string          `json:"port"`
+	Firmware     *firmwareOut     `json:"firmware"`
 	Capabilities *capabilitiesOut `json:"capabilities"`
 }
 
@@ -42,6 +52,9 @@ func splitCapabilities(caps []board.PinCapability) capabilitiesOut {
 	for _, pc := range caps {
 		if pc.HasAnalogChannel {
 			out.AnalogPins = append(out.AnalogPins, pc.AnalogChannel)
+		}
+		if pc.SupportsMode(board.ModePWM) {
+			out.PWMPins = append(out.PWMPins, pc.Pin)
 		}
 		out.DigitalPins = append(out.DigitalPins, pc.Pin)
 	}
@@ -61,6 +74,7 @@ func toBoardOut(b board.BoardInfo) boardOut {
 		out.Port = &p
 		caps := splitCapabilities(b.Capabilities)
 		out.Capabilities = &caps
+		out.Firmware = &firmwareOut{Name: b.FirmwareName, Major: b.FirmwareMajor, Minor: b.FirmwareMinor}
 	}
 	return out
 }
@@ -81,12 +95,15 @@ func (s *Server) boardsSnapshot() []boardOut {
 	status := "disconnected"
 	var port *string
 	var caps *capabilitiesOut
+	var fw *firmwareOut
 	if s.sess.Alive() {
 		status = "connected"
 		p := s.port
 		port = &p
 		c := splitCapabilities(s.sess.Capabilities())
 		caps = &c
+		name, major, minor := s.sess.Firmware()
+		fw = &firmwareOut{Name: name, Major: major, Minor: minor}
 	}
 	return []boardOut{{
 		ID:           defaultBoardID,
@@ -94,6 +111,7 @@ func (s *Server) boardsSnapshot() []boardOut {
 		PortHint:     s.port,
 		Status:       status,
 		Port:         port,
+		Firmware:     fw,
 		Capabilities: caps,
 	}}
 }

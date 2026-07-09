@@ -113,6 +113,7 @@ export interface BoardIdentity {
 export interface BoardCapabilities {
   digitalPins: number[]
   analogPins: number[]
+  pwmPins: number[]
 }
 
 /** GET /api/v1/boards item shape (internal/api/boards.go's boardOut). */
@@ -123,6 +124,8 @@ export interface BoardEntry {
   portHint?: string
   status: BoardStatus
   port: string | null
+  /** Live session data: present only while the board is connected. */
+  firmware: { name: string; major: number; minor: number } | null
   capabilities: BoardCapabilities | null
 }
 

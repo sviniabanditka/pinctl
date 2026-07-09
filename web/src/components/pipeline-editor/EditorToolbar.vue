@@ -2,9 +2,15 @@
 import { computed } from 'vue'
 import { useEditorStore } from '../../stores/editor'
 
-const emit = defineEmits<{ save: []; toggleEnabled: [] }>()
+const emit = defineEmits<{
+  save: []
+  toggleEnabled: []
+  selectErrorNode: [id: string]
+}>()
 
-const props = defineProps<{ toggleBusy: boolean }>()
+const props = defineProps<{
+  toggleBusy: boolean
+}>()
 
 const editor = useEditorStore()
 
@@ -20,6 +26,21 @@ const saveTooltip = computed(() => {
 })
 
 const enableDisabled = computed(() => editor.dirty)
+
+/** Union of nodes flagged by a server validation error or part of a client-detected cycle. */
+const errorNodeIds = computed(() => {
+  const ids = new Set<string>()
+  for (const [id, issues] of Object.entries(editor.serverErrors)) {
+    if (issues.length > 0) ids.add(id)
+  }
+  for (const id of editor.clientCycleNodes) ids.add(id)
+  return ids
+})
+
+function selectFirstError() {
+  const first = errorNodeIds.value.values().next().value
+  if (first) emit('selectErrorNode', first)
+}
 </script>
 
 <template>
@@ -27,32 +48,43 @@ const enableDisabled = computed(() => editor.dirty)
     <input
       class="name-field"
       :value="editor.name"
+      aria-label="Pipeline name"
       @input="editor.setName(($event.target as HTMLInputElement).value)"
     />
+
     <label class="tick-field">
-      tick
+      <span class="label">tick</span>
       <input
         type="number"
         min="1"
+        class="mono"
         :value="editor.tickMs"
+        aria-label="Tick rate in milliseconds"
         @input="editor.setTickMs(Number(($event.target as HTMLInputElement).value))"
       />
-      ms
+      <span class="label">ms</span>
     </label>
 
+    <span v-if="editor.enabled && editor.liveTick !== null" class="tick-counter mono num">tick {{ editor.liveTick }}</span>
+
+    <button v-if="errorNodeIds.size > 0" class="quiet error-count" @click="selectFirstError">
+      {{ errorNodeIds.size }} error{{ errorNodeIds.size > 1 ? 's' : '' }}
+    </button>
+
+    <span class="spacer" />
+
+    <span v-if="editor.dirty" class="dot dirty-dot" title="Unsaved changes" />
+
     <button
+      class="enable-toggle"
       :disabled="props.toggleBusy || enableDisabled"
       :title="enableDisabled ? 'Save first' : ''"
       @click="emit('toggleEnabled')"
     >
+      <span class="dot" :class="{ running: editor.enabled }" />
       {{ props.toggleBusy ? '…' : editor.enabled ? 'Disable' : 'Enable' }}
     </button>
 
-    <span v-if="editor.enabled && editor.liveTick !== null" class="tick-counter">tick {{ editor.liveTick }}</span>
-
-    <span class="spacer" />
-
-    <span v-if="editor.dirty" class="dirty-dot" title="Unsaved changes" />
     <button class="primary" :disabled="saveDisabled" :title="saveTooltip" @click="emit('save')">
       {{ editor.saving ? 'Saving…' : 'Save' }}
     </button>
@@ -63,32 +95,53 @@ const enableDisabled = computed(() => editor.dirty)
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  border-top: 1px solid var(--color-border);
-  background: var(--color-bg-alt);
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+  flex-shrink: 0;
 }
 
 .name-field {
   font-weight: 600;
   min-width: 180px;
+  background: transparent;
+  border-color: transparent;
+}
+
+.name-field:hover,
+.name-field:focus-visible {
+  border-color: var(--hairline);
 }
 
 .tick-field {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--color-text-dim);
+  gap: var(--space-1);
 }
 
 .tick-field input {
-  width: 70px;
+  width: 64px;
 }
 
 .tick-counter {
-  font-size: 12px;
-  color: var(--color-text-dim);
+  color: var(--ink-dim);
+}
+
+.error-count {
+  color: var(--signal-alert);
+  border-color: color-mix(in srgb, var(--signal-alert) 40%, transparent);
+}
+
+.error-count:hover {
+  background: color-mix(in srgb, var(--signal-alert) 10%, transparent);
+  border-color: var(--signal-alert);
+}
+
+.enable-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 .spacer {
@@ -96,9 +149,6 @@ const enableDisabled = computed(() => editor.dirty)
 }
 
 .dirty-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-warning);
+  background: var(--signal-warn);
 }
 </style>

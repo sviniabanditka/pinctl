@@ -78,10 +78,13 @@ export interface NodeSchema {
   summary: (config: Record<string, unknown>, devices: Device[]) => string
 }
 
+// References the shared signal tokens (src/styles/base.css) rather than
+// hardcoding hex — these are read into inline `style` bindings, so a CSS
+// custom property string works exactly like a literal here.
 export const PORT_COLORS: Record<PortValueType, string> = {
-  bool: '#d97706', // amber
-  float64: '#0d9488', // teal
-  any: '#6b7280', // neutral gray — log's AnyType input, accepts either type
+  bool: 'var(--signal-bool)',
+  float64: 'var(--signal-float)',
+  any: 'var(--ink-faint)', // log's AnyType input, accepts either type
 }
 
 /** All seven weekday tokens accepted by clock.config.days, in `internal/engine/nodes_sources.go`'s allWeekdays order. */

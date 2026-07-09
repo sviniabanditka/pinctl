@@ -8,11 +8,11 @@ const emit = defineEmits<{ cancel: []; confirm: [] }>()
 
 <template>
   <div class="dialog-backdrop" @click.self="emit('cancel')">
-    <div class="dialog">
+    <div class="dialog" role="alertdialog" aria-modal="true" :aria-label="title">
       <h2>{{ title }}</h2>
       <p>{{ message }}</p>
       <div class="dialog-actions">
-        <button type="button" @click="emit('cancel')">Cancel</button>
+        <button type="button" class="quiet" @click="emit('cancel')">Cancel</button>
         <button type="button" class="danger" :disabled="busy" @click="emit('confirm')">
           {{ busy ? 'Working…' : confirmLabel }}
         </button>

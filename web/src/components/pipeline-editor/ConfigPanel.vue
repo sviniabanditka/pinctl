@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+// Node configuration popover — anchored beside the selected node by the
+// parent view (PipelineEditorView owns all Vue Flow viewport math; this
+// component only renders content + owns its own focus/keyboard behaviour).
+import { computed, nextTick, ref, watch } from 'vue'
 import { useDevicesStore } from '../../stores/devices'
 import { useEditorStore } from '../../stores/editor'
 import {
@@ -12,11 +15,20 @@ import {
   type ExpressionInputDef,
 } from '../../lib/nodeSchemas'
 
-const props = defineProps<{ selectedNodeId: string | null }>()
-const emit = defineEmits<{ delete: [id: string] }>()
+const props = withDefaults(
+  defineProps<{
+    selectedNodeId: string | null
+    anchorStyle?: Record<string, string>
+    side?: 'left' | 'right' | 'sheet'
+  }>(),
+  { anchorStyle: () => ({}), side: 'right' },
+)
+const emit = defineEmits<{ delete: [id: string]; close: [] }>()
 
 const editor = useEditorStore()
 const devices = useDevicesStore()
+
+const rootEl = ref<HTMLElement | null>(null)
 
 const selectedNode = computed(() => editor.nodes.find((n) => n.id === props.selectedNodeId) ?? null)
 const schema = computed(() => (selectedNode.value ? NODE_SCHEMAS[selectedNode.value.data.nodeType] : undefined))
@@ -145,37 +157,75 @@ const expressionClientErrors = computed<string[]>(() => {
   }
   return out
 })
+
+// -- open/close focus management --------------------------------------------
+
+function focusFirstField() {
+  const el = rootEl.value?.querySelector<HTMLElement>('.popover-body input, .popover-body select, .popover-body textarea')
+  el?.focus()
+}
+
+watch(
+  () => props.selectedNodeId,
+  async (id) => {
+    if (!id) return
+    await nextTick()
+    focusFirstField()
+  },
+  { immediate: true },
+)
+
+function onKeydown(ev: KeyboardEvent) {
+  if (ev.key === 'Escape') {
+    ev.stopPropagation()
+    emit('close')
+    return
+  }
+  if (ev.key === 'Tab') trapFocus(ev)
+}
+
+/** Minimal focus trap: cycles Tab/Shift+Tab within the popover's focusable elements. */
+function trapFocus(ev: KeyboardEvent) {
+  const root = rootEl.value
+  if (!root) return
+  const focusable = Array.from(
+    root.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex]:not([tabindex="-1"])'),
+  ).filter((el) => !el.hasAttribute('disabled'))
+  if (focusable.length === 0) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (ev.shiftKey && document.activeElement === first) {
+    ev.preventDefault()
+    last.focus()
+  } else if (!ev.shiftKey && document.activeElement === last) {
+    ev.preventDefault()
+    first.focus()
+  }
+}
 </script>
 
 <template>
-  <aside class="config-panel">
-    <template v-if="!selectedNode">
-      <h3>Pipeline settings</h3>
-      <div class="field">
-        <label for="pl-name">Name</label>
-        <input id="pl-name" :value="editor.name" @input="editor.setName(($event.target as HTMLInputElement).value)" />
-      </div>
-      <div class="field">
-        <label for="pl-tick">Tick rate (ms)</label>
-        <input
-          id="pl-tick"
-          type="number"
-          min="1"
-          :value="editor.tickMs"
-          @input="editor.setTickMs(Number(($event.target as HTMLInputElement).value))"
-        />
-      </div>
-      <p class="field-hint">
-        Enable/disable is a separate action from Save, in the toolbar above.
-      </p>
-    </template>
+  <div
+    v-if="selectedNode"
+    ref="rootEl"
+    class="config-popover"
+    :class="[`side-${side}`]"
+    :style="anchorStyle"
+    role="dialog"
+    :aria-label="`${schema?.displayName ?? selectedNode.data.nodeType} settings`"
+    @keydown="onKeydown"
+  >
+    <span v-if="side !== 'sheet'" class="popover-caret" aria-hidden="true" />
 
-    <template v-else>
-      <div class="node-config-header">
-        <h3>{{ schema?.displayName ?? selectedNode.data.nodeType }}</h3>
-        <button class="danger" @click="emit('delete', selectedNode.id)">Delete node</button>
+    <div class="popover-header">
+      <span class="label">{{ schema?.displayName ?? selectedNode.data.nodeType }}</span>
+      <div class="popover-header-actions">
+        <button class="danger" @click="emit('delete', selectedNode.id)">Delete</button>
+        <button class="quiet popover-close" title="Close" aria-label="Close" @click="emit('close')">×</button>
       </div>
+    </div>
 
+    <div class="popover-body">
       <div v-if="errors.length > 0 && selectedNode.data.nodeType !== 'expression'" class="issue-list error">
         <div v-for="(e, i) in errors" :key="i">{{ e.message }}</div>
       </div>
@@ -198,6 +248,7 @@ const expressionClientErrors = computed<string[]>(() => {
         <select
           v-else-if="effectiveKind(f) === 'deviceRef'"
           :id="`f-${f.key}`"
+          class="mono"
           :value="String(fieldValue(f.key) ?? '')"
           @change="onFieldInput(f.key, 'string', ($event.target as HTMLSelectElement).value)"
         >
@@ -220,7 +271,7 @@ const expressionClientErrors = computed<string[]>(() => {
               :checked="isWeekdaySelected(f.key, day, f.default)"
               @change="onWeekdayToggle(f.key, day, f.default, ($event.target as HTMLInputElement).checked)"
             />
-            {{ day }}
+            <span class="mono">{{ day }}</span>
           </label>
         </div>
 
@@ -228,7 +279,7 @@ const expressionClientErrors = computed<string[]>(() => {
           <div v-for="(row, i) in expressionInputRows(f.key)" :key="i" class="input-list-row">
             <input
               type="text"
-              class="input-list-name"
+              class="input-list-name mono"
               placeholder="name"
               :value="row.name"
               @input="onInputRowChange(f.key, i, { name: ($event.target as HTMLInputElement).value })"
@@ -242,21 +293,21 @@ const expressionClientErrors = computed<string[]>(() => {
             </select>
             <button type="button" class="danger-icon" title="Remove input" @click="onInputRowRemove(f.key, i)">×</button>
           </div>
-          <button type="button" class="add-input" @click="onInputRowAdd(f.key)">+ Add input</button>
+          <button type="button" class="quiet add-input" @click="onInputRowAdd(f.key)">+ Add input</button>
         </div>
 
         <div v-else-if="f.kind === 'expression'" class="expression-field">
           <textarea
             :id="`f-${f.key}`"
-            class="expression-textarea"
+            class="expression-textarea mono"
             rows="3"
             spellcheck="false"
             :value="String(fieldValue(f.key) ?? f.default)"
             @input="onFieldInput(f.key, 'string', ($event.target as HTMLTextAreaElement).value)"
           />
           <p class="field-hint expression-hint">
-            Operators: <code>{{ EXPR_OPERATORS }}</code><br />
-            Builtins: <code>{{ EXPR_BUILTINS }}</code>
+            Operators: <code class="mono">{{ EXPR_OPERATORS }}</code><br />
+            Builtins: <code class="mono">{{ EXPR_BUILTINS }}</code>
           </p>
           <div v-if="expressionClientErrors.length > 0" class="issue-list error">
             <div v-for="(e, i) in expressionClientErrors" :key="i">{{ e }}</div>
@@ -270,6 +321,7 @@ const expressionClientErrors = computed<string[]>(() => {
           v-else-if="effectiveKind(f) === 'number'"
           :id="`f-${f.key}`"
           type="number"
+          class="mono"
           :min="f.min"
           :step="f.step"
           :value="Number(fieldValue(f.key) ?? f.default)"
@@ -280,83 +332,141 @@ const expressionClientErrors = computed<string[]>(() => {
           v-else
           :id="`f-${f.key}`"
           type="text"
+          class="mono"
           :value="String(fieldValue(f.key) ?? f.default)"
           @input="onFieldInput(f.key, 'string', ($event.target as HTMLInputElement).value)"
         />
       </div>
-    </template>
-  </aside>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.config-panel {
-  width: 260px;
+.config-popover {
+  position: fixed;
+  z-index: 40;
+  width: 320px;
+  max-height: min(70vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: var(--raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .config-popover {
+    animation: popover-in 0.12s ease;
+  }
+}
+
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.config-popover.side-sheet {
+  width: 100%;
+  max-height: 60vh;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  border-bottom: none;
+}
+
+.popover-caret {
+  position: absolute;
+  top: 20px;
+  width: 9px;
+  height: 9px;
+  background: var(--raised);
+  border: 1px solid var(--hairline-strong);
+  transform: rotate(45deg);
+}
+
+.side-right .popover-caret {
+  left: -5px;
+  border-right: none;
+  border-top: none;
+}
+
+.side-left .popover-caret {
+  right: -5px;
+  border-left: none;
+  border-bottom: none;
+}
+
+.popover-header {
   flex-shrink: 0;
-  border-left: 1px solid var(--color-border);
-  padding: 12px;
-  overflow-y: auto;
-}
-
-.config-panel h3 {
-  font-size: 13px;
-  margin: 0 0 12px;
-}
-
-.node-config-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--hairline);
 }
 
-.node-config-header h3 {
-  margin: 0;
+.popover-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.popover-close {
+  font-size: 1rem;
+  line-height: 1;
+  padding: 2px 8px;
+}
+
+.popover-body {
+  overflow-y: auto;
+  padding: var(--space-4);
 }
 
 .issue-list {
-  font-size: 12px;
-  border-radius: var(--radius);
-  padding: 6px 8px;
-  margin-bottom: 10px;
+  font-size: 0.75rem;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  margin-bottom: var(--space-3);
+  border: 1px solid transparent;
 }
 
 .issue-list.error {
-  background: var(--color-danger-bg);
-  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--signal-alert) 40%, transparent);
+  color: var(--signal-alert);
 }
 
 .issue-list.warning {
-  background: var(--color-warning-bg);
-  color: var(--color-warning);
-}
-
-.field-inline {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  border-color: color-mix(in srgb, var(--signal-warn) 40%, transparent);
+  color: var(--signal-warn);
 }
 
 .weekdays-field {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .weekday-toggle {
-  font-size: 11px;
+  font-size: 0.75rem;
   text-transform: capitalize;
 }
 
 .input-list-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .input-list-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .input-list-name {
@@ -366,44 +476,39 @@ const expressionClientErrors = computed<string[]>(() => {
 
 .danger-icon {
   flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  line-height: 1;
-  border: none;
-  border-radius: var(--radius);
-  background: var(--color-danger-bg);
-  color: var(--color-danger);
-  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-faint);
+}
+
+.danger-icon:hover {
+  color: var(--signal-alert);
+  background: color-mix(in srgb, var(--signal-alert) 10%, transparent);
+  border-color: transparent;
 }
 
 .add-input {
   align-self: flex-start;
-  font-size: 12px;
-  background: none;
-  border: 1px dashed var(--color-border);
-  border-radius: var(--radius);
-  padding: 4px 8px;
-  cursor: pointer;
+  font-size: 0.75rem;
+  border-style: dashed;
 }
 
 .expression-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .expression-textarea {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  font-size: 12px;
+  font-size: 0.75rem;
   resize: vertical;
   min-height: 3.5em;
 }
 
 .expression-hint {
   line-height: 1.5;
-}
-
-.expression-hint code {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
 }
 </style>

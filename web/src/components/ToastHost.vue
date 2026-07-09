@@ -9,9 +9,11 @@ const { toasts, dismissToast } = useToasts()
     <div v-for="t in toasts" :key="t.id" class="toast" :class="t.severity">
       <div class="toast-body">
         <div class="toast-message">{{ t.message }}</div>
-        <div v-if="t.detail" class="toast-detail">{{ t.detail }}</div>
+        <div v-if="t.detail" class="toast-detail mono">{{ t.detail }}</div>
       </div>
-      <button class="toast-dismiss" @click="dismissToast(t.id)">×</button>
+      <button type="button" class="toast-dismiss quiet" aria-label="Dismiss" @click="dismissToast(t.id)">
+        ×
+      </button>
     </div>
   </div>
 </template>
@@ -19,11 +21,11 @@ const { toasts, dismissToast } = useToasts()
 <style scoped>
 .toast-host {
   position: fixed;
-  bottom: 16px;
-  right: 16px;
+  bottom: var(--space-4);
+  right: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   z-index: 200;
   max-width: 360px;
 }
@@ -31,24 +33,25 @@ const { toasts, dismissToast } = useToasts()
 .toast {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--raised);
+  border: 1px solid var(--hairline-strong);
+  border-left: 2px solid var(--ink-faint);
+  box-shadow: var(--shadow-popover);
 }
 
 .toast.info {
-  border-color: var(--color-info);
+  border-left-color: var(--ink-dim);
 }
 
 .toast.warning {
-  border-color: var(--color-warning);
+  border-left-color: var(--signal-warn);
 }
 
 .toast.error {
-  border-color: var(--color-danger);
+  border-left-color: var(--signal-alert);
 }
 
 .toast-body {
@@ -57,21 +60,25 @@ const { toasts, dismissToast } = useToasts()
 }
 
 .toast-message {
-  font-size: 13px;
+  font-size: 0.8125rem;
+  color: var(--ink);
 }
 
 .toast-detail {
-  font-size: 12px;
-  color: var(--color-text-dim);
+  font-size: 0.8125rem;
+  color: var(--ink-dim);
   margin-top: 2px;
 }
 
 .toast-dismiss {
   border: none;
-  background: none;
   padding: 0 2px;
   line-height: 1;
-  font-size: 16px;
-  color: var(--color-text-dim);
+  font-size: 1rem;
+  color: var(--ink-faint);
+}
+
+.toast-dismiss:hover:not(:disabled) {
+  color: var(--ink);
 }
 </style>

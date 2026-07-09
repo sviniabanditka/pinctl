@@ -1,13 +1,18 @@
 <script setup lang="ts">
-// Collapsible bottom panel showing the live `log` node stream while
-// debugging (docs/08-node-catalog.md "log", docs/10-api.md's
-// "pipeline:{id}" topic's optional `log` array). Entries accumulate in
-// editor.liveLog (capped at 200, newest last); rendered newest-first here.
-import { computed, ref } from 'vue'
+// Bottom drawer showing the live `log` node stream while debugging
+// (docs/08-node-catalog.md "log", docs/10-api.md's "pipeline:{id}" topic's
+// optional `log` array). Entries accumulate in editor.liveLog (capped at
+// 200, newest last); rendered newest-first here. Hidden by default — the
+// parent view owns the open/closed state (persisted to localStorage) and
+// toggles it from EditorToolbar; this component just renders the drawer
+// body and answers Escape when focus is inside it.
+import { computed } from 'vue'
 import { useEditorStore } from '../../stores/editor'
 
+const props = defineProps<{ open: boolean }>()
+const emit = defineEmits<{ close: [] }>()
+
 const editor = useEditorStore()
-const collapsed = ref(false)
 
 const entries = computed(() => [...editor.liveLog].reverse())
 
@@ -20,36 +25,42 @@ function formatTime(ts: string): string {
 function formatValue(v: boolean | number): string {
   return typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v)
 }
+
+function onKeydown(ev: KeyboardEvent) {
+  if (ev.key === 'Escape') {
+    ev.preventDefault()
+    emit('close')
+  }
+}
 </script>
 
 <template>
-  <div class="log-panel" :class="{ collapsed }">
+  <div v-if="props.open" id="editor-log-panel" class="log-panel" role="region" aria-label="Log" @keydown="onKeydown">
     <div class="log-panel-header">
-      <button class="log-toggle" @click="collapsed = !collapsed">
-        {{ collapsed ? '▸' : '▾' }} Log
-        <span v-if="entries.length > 0" class="log-count">({{ entries.length }})</span>
-      </button>
+      <span class="label">Log</span>
       <span class="spacer" />
       <button :disabled="entries.length === 0" @click="editor.clearLog()">Clear</button>
     </div>
 
-    <div v-if="!collapsed" class="log-panel-body">
+    <div class="log-panel-body">
       <div v-if="entries.length === 0" class="log-empty">
-        No log entries yet. Add a <code>log</code> node and enable the pipeline to see live values here.
+        No log entries yet. Add a <code class="mono">log</code> node and enable the pipeline to see live values here.
       </div>
       <table v-else class="log-table">
         <thead>
           <tr>
             <th>Time</th>
-            <th>Label</th>
+            <th>Node</th>
             <th>Value</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="(e, i) in entries" :key="i">
-            <td class="log-time">{{ formatTime(e.timestamp) }}</td>
-            <td>{{ e.label }}</td>
-            <td class="log-value">{{ formatValue(e.value) }}</td>
+            <td class="log-time mono num">{{ formatTime(e.timestamp) }}</td>
+            <td class="label log-label">{{ e.label }}</td>
+            <td class="log-value mono num" :class="typeof e.value === 'boolean' ? 'value-bool' : 'value-float'">
+              {{ formatValue(e.value) }}
+            </td>
           </tr>
         </tbody>
       </table>
@@ -60,35 +71,19 @@ function formatValue(v: boolean | number): string {
 <style scoped>
 .log-panel {
   flex-shrink: 0;
-  border-top: 1px solid var(--color-border);
-  background: var(--color-bg-alt);
+  height: 200px;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface);
   display: flex;
   flex-direction: column;
-  max-height: 220px;
-}
-
-.log-panel.collapsed {
-  max-height: none;
 }
 
 .log-panel-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-}
-
-.log-toggle {
-  background: none;
-  border: none;
-  padding: 2px 4px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.log-count {
-  color: var(--color-text-dim);
-  font-weight: 400;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  flex-shrink: 0;
 }
 
 .spacer {
@@ -96,33 +91,37 @@ function formatValue(v: boolean | number): string {
 }
 
 .log-panel-body {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 0 10px 8px;
+  padding: 0 var(--space-3) var(--space-2);
 }
 
 .log-empty {
-  color: var(--color-text-dim);
-  font-size: 12px;
-  padding: 8px 0;
+  color: var(--ink-dim);
+  font-size: 0.75rem;
+  padding: var(--space-2) 0;
 }
 
 .log-table {
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 
 .log-table th,
 .log-table td {
-  padding: 3px 8px;
+  padding: 3px var(--space-2);
 }
 
 .log-time {
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text-dim);
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.log-label {
   white-space: nowrap;
 }
 
 .log-value {
-  font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
 </style>

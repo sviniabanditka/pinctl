@@ -1,27 +1,62 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router'
+// The shell: a page header (mark, tagline, WS status) + whatever the
+// current route renders + the toast host. There is no nav rail any more —
+// pinctl is down to two routes (Home, the pipeline editor), so a header
+// link back to "/" is all the wayfinding the app needs (see router/index.ts).
+import { computed } from 'vue'
+import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { useWsStore } from './stores/ws'
 import ToastHost from './components/ToastHost.vue'
+import AppIcon from './components/icons/AppIcon.vue'
 
 const ws = useWsStore()
+const route = useRoute()
+
+// The pipeline editor (meta.fullscreen, router/index.ts) needs the full
+// viewport with no page scrollbar: .content-flush hands it the exact
+// remainder below the header via flexbox instead of padding, and
+// PipelineEditorView.vue's own `height: 100dvh` / negative-margin hack
+// (out of scope to edit here) is neutralized from base.css instead — see
+// the `.editor-shell` override there for why.
+const fullscreen = computed(() => !!route.meta.fullscreen)
+
+const WS_LABEL: Record<string, string> = {
+  open: 'Connected',
+  connecting: 'Connecting…',
+  reconnecting: 'Reconnecting…',
+  closed: 'Offline',
+}
 </script>
 
 <template>
   <div class="shell">
-    <aside class="sidebar">
-      <div class="brand">pinctl</div>
-      <nav>
-        <RouterLink to="/" exact-active-class="active">Dashboard</RouterLink>
-        <RouterLink to="/boards" active-class="active">Boards</RouterLink>
-        <RouterLink to="/devices" active-class="active">Devices</RouterLink>
-        <RouterLink to="/pipelines" active-class="active">Pipelines</RouterLink>
-      </nav>
-      <div class="ws-indicator" :class="ws.connectionState">
-        <span class="dot" />
-        <span>{{ ws.connectionState }}</span>
+    <header class="app-header" :class="{ thin: fullscreen }">
+      <RouterLink to="/" class="brand">
+        <AppIcon name="mark" />
+        <span class="wordmark">pinctl</span>
+      </RouterLink>
+      <p v-if="!fullscreen" class="tagline">Pipeline I/O control for Arduino boards.</p>
+
+      <div
+        class="ws-indicator"
+        :class="ws.connectionState"
+        role="status"
+        aria-live="polite"
+      >
+        <span
+          class="dot"
+          :class="{
+            running: ws.connectionState === 'open',
+            warn: ws.connectionState === 'connecting' || ws.connectionState === 'reconnecting',
+            error: ws.connectionState === 'closed',
+            'dot-pulse': ws.connectionState === 'reconnecting',
+          }"
+        />
+        <span class="label ws-label">{{ WS_LABEL[ws.connectionState] ?? ws.connectionState }}</span>
       </div>
-    </aside>
-    <main class="content">
+    </header>
+
+    <main class="content" :class="{ 'content-flush': fullscreen }">
       <RouterView />
     </main>
   </div>
@@ -31,82 +66,92 @@ const ws = useWsStore()
 <style scoped>
 .shell {
   display: flex;
-  min-height: 100vh;
+  flex-direction: column;
+  height: 100vh;
 }
 
-.sidebar {
-  width: 200px;
+.app-header {
   flex-shrink: 0;
-  background: var(--color-bg-alt);
-  border-right: 1px solid var(--color-border);
   display: flex;
-  flex-direction: column;
-  padding: 16px 12px;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-6);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+}
+
+.app-header.thin {
+  padding: var(--space-2) var(--space-4);
 }
 
 .brand {
-  font-weight: 700;
-  font-size: 16px;
-  padding: 0 8px 16px;
-}
-
-nav {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-nav a {
-  color: var(--color-text);
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink);
   text-decoration: none;
-  padding: 8px 10px;
-  border-radius: var(--radius);
+  flex-shrink: 0;
 }
 
-nav a:hover {
-  background: var(--color-surface);
-}
-
-nav a.active {
-  background: var(--color-surface);
-  color: var(--color-accent);
+.wordmark {
+  font-family: var(--font-label);
   font-weight: 600;
+  font-size: 0.9375rem;
+  letter-spacing: 0.02em;
+}
+
+.tagline {
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ws-indicator {
-  margin-top: auto;
+  margin-left: auto;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  font-size: 12px;
-  color: var(--color-text-dim);
-  text-transform: capitalize;
+  gap: var(--space-2);
 }
 
-.ws-indicator .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-badge-stopped);
-}
-
-.ws-indicator.open .dot {
-  background: var(--color-success);
-}
-
-.ws-indicator.connecting .dot,
-.ws-indicator.reconnecting .dot {
-  background: var(--color-warning);
-}
-
-.ws-indicator.closed .dot {
-  background: var(--color-danger);
+.ws-label {
+  white-space: nowrap;
 }
 
 .content {
   flex: 1;
+  min-height: 0;
   min-width: 0;
-  padding: 24px 32px;
+  overflow-y: auto;
+  padding: var(--space-6) var(--space-8);
+}
+
+/* The editor owns the entire remaining viewport itself — no padding for
+   it to negative-margin its way out of, no scroll container above it. */
+.content-flush {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (max-width: 560px) {
+  .app-header {
+    flex-wrap: wrap;
+    padding: var(--space-2) var(--space-4);
+  }
+
+  .tagline {
+    order: 3;
+    flex-basis: 100%;
+    white-space: normal;
+  }
+
+  .content:not(.content-flush) {
+    padding: var(--space-4);
+  }
 }
 </style>

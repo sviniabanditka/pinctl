@@ -82,7 +82,15 @@ function onSubmit() {
 
         <div class="field">
           <label for="dev-pin">Pin</label>
-          <input id="dev-pin" v-model.number="form.pin" type="number" min="0" required :disabled="isEdit" />
+          <input
+            id="dev-pin"
+            v-model.number="form.pin"
+            class="mono num"
+            type="number"
+            min="0"
+            required
+            :disabled="isEdit"
+          />
           <span v-if="isEdit" class="field-hint">Pin can't be changed — delete and recreate to re-point it.</span>
         </div>
 
@@ -99,14 +107,22 @@ function onSubmit() {
 
         <template v-if="form.role === 'digital-in'">
           <div class="field field-inline">
-            <label><input v-model="form.pullup" type="checkbox" /> Pull-up resistor</label>
+            <label class="field-inline"><input v-model="form.pullup" type="checkbox" /> Pull-up resistor</label>
           </div>
         </template>
 
         <template v-if="isOutput">
           <div class="field">
             <label for="dev-initial">Initial value</label>
-            <input v-if="isPwm" id="dev-initial" v-model.number="form.initial" type="number" min="0" max="255" />
+            <input
+              v-if="isPwm"
+              id="dev-initial"
+              v-model.number="form.initial"
+              class="mono num"
+              type="number"
+              min="0"
+              max="255"
+            />
             <label v-else class="field-inline"><input v-model="form.initial" type="checkbox" /> On</label>
           </div>
           <div class="field">
@@ -118,13 +134,21 @@ function onSubmit() {
           </div>
           <div v-if="form.onDisconnect === 'safe-value'" class="field">
             <label for="dev-safe">Safe value</label>
-            <input v-if="isPwm" id="dev-safe" v-model.number="form.safeValue" type="number" min="0" max="255" />
+            <input
+              v-if="isPwm"
+              id="dev-safe"
+              v-model.number="form.safeValue"
+              class="mono num"
+              type="number"
+              min="0"
+              max="255"
+            />
             <label v-else class="field-inline"><input v-model="form.safeValue" type="checkbox" /> On</label>
           </div>
         </template>
 
         <div class="dialog-actions">
-          <button type="button" @click="emit('cancel')">Cancel</button>
+          <button type="button" class="quiet" @click="emit('cancel')">Cancel</button>
           <button type="submit" class="primary" :disabled="busy">
             {{ busy ? 'Saving…' : 'Save' }}
           </button>
@@ -135,9 +159,15 @@ function onSubmit() {
 </template>
 
 <style scoped>
-.field-inline label {
+.field-inline {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: var(--font-sans);
+  font-weight: 400;
+  font-size: 0.8125rem;
+  color: var(--ink);
 }
 </style>

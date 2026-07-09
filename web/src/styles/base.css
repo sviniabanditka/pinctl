@@ -1,55 +1,104 @@
+/* ==========================================================================
+   pinctl — visual foundation
+   "Instrument, not dashboard." Chrome is monochrome graphite; saturated
+   colour is reserved for signal (data type / live value / status).
+   ========================================================================== */
+
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
 
-  --color-bg: #ffffff;
-  --color-bg-alt: #f4f5f7;
-  --color-surface: #ffffff;
-  --color-border: #dde1e6;
-  --color-text: #1a1d21;
-  --color-text-dim: #5b6470;
-  --color-accent: #2563eb;
-  --color-accent-contrast: #ffffff;
-  --color-danger: #c0362c;
-  --color-danger-bg: #fbe9e7;
-  --color-warning: #a86400;
-  --color-warning-bg: #fff4e0;
-  --color-info: #1c6fa5;
-  --color-info-bg: #e6f2fa;
-  --color-success: #1c7a4d;
-  --color-badge-running: #1c7a4d;
-  --color-badge-stopped: #5b6470;
-  --color-badge-error: #c0362c;
-  --color-badge-paused: #a86400;
+  /* enclosure */
+  --panel: #0f1215; /* app background */
+  --surface: #171b20; /* cards, panels */
+  --raised: #1e242b; /* popovers, menus, inputs */
+  --hairline: #2b333c; /* 1px rules, borders */
+  --hairline-strong: #3a434e;
 
-  --radius: 6px;
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  /* ink */
+  --ink: #e4e8ec;
+  --ink-dim: #97a1ac;
+  --ink-faint: #6b7480;
+
+  /* signal — the ONLY saturated colours */
+  --signal-bool: #f0a32e; /* bool ports, digital values */
+  --signal-float: #35c2b4; /* float64 ports, analog values */
+  --signal-alert: #e5484d; /* errors, destructive */
+  --signal-warn: #d9932b; /* warnings */
+
+  /* status mapping */
+  --status-running: var(--signal-float);
+  --status-warn: var(--signal-warn);
+  --status-error: var(--signal-alert);
+  --status-idle: var(--ink-faint);
+
+  /* type */
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-label: 'IBM Plex Sans Condensed', var(--font-sans);
+
+  /* spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  /* radius */
+  --radius-sm: 4px;
+  --radius-lg: 8px;
+
+  /* elevation */
+  --shadow-popover: 0 12px 32px rgb(0 0 0 / 45%);
+
+  /* focus */
+  --focus-ring: color-mix(in srgb, var(--signal-float) 50%, transparent);
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --color-bg: #16181d;
-    --color-bg-alt: #1c1f26;
-    --color-surface: #20232b;
-    --color-border: #2e323c;
-    --color-text: #e7e9ec;
-    --color-text-dim: #9aa2ad;
-    --color-accent: #5b8cff;
-    --color-accent-contrast: #0b1020;
-    --color-danger: #ff6b60;
-    --color-danger-bg: #3a1f1d;
-    --color-warning: #e2a83d;
-    --color-warning-bg: #3a2f14;
-    --color-info: #6cb6ea;
-    --color-info-bg: #17293a;
-    --color-success: #57c98a;
-    --color-badge-running: #57c98a;
-    --color-badge-stopped: #9aa2ad;
-    --color-badge-error: #ff6b60;
-    --color-badge-paused: #e2a83d;
+    color-scheme: light;
+
+    /* enclosure — graphite chrome becomes warm-grey chrome */
+    --panel: #eeebe6;
+    --surface: #f8f6f2;
+    --raised: #ffffff;
+    --hairline: #dbd5cb;
+    --hairline-strong: #c2baac;
+
+    /* ink */
+    --ink: #201d18;
+    --ink-dim: #5c564c;
+    --ink-faint: #83796c;
+
+    /* Signal colours are darkened for light mode — the dark-mode values are
+       tuned for a near-black surface and fail as *text* contrast against the
+       light theme's near-white surfaces. Measured against --raised/--surface/
+       --panel (WCAG 2.1 relative luminance): at the dark-mode value,
+       --signal-bool (#f0a32e) is ~2.1:1 on --raised, --signal-float
+       (#35c2b4) ~2.2:1, --signal-warn (#d9932b) ~2.6:1, --signal-alert
+       (#e5484d) ~3.9:1 — all well under the 4.5:1 body-text minimum. Each is
+       darkened here just enough to clear 4.5:1 on --raised and --surface
+       (>=4.3:1 on --panel, which rarely hosts small text directly) while
+       keeping the same hue so bool/float/alert/warn stay identifiable.
+       Hue is unchanged; only lightness drops. */
+    --signal-bool: #a15c07;
+    --signal-float: #0f766e;
+    --signal-alert: #c92a2a;
+    --signal-warn: #985a0c;
+
+    --shadow-popover: 0 12px 32px rgb(30 24 12 / 16%);
   }
 }
 
-* {
+/* ==========================================================================
+   Reset
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -61,198 +110,702 @@ body {
 body {
   margin: 0;
   font-family: var(--font-sans);
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-size: 14px;
-  line-height: 1.45;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 #app {
   height: 100%;
 }
 
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+}
+
 a {
-  color: var(--color-accent);
+  color: inherit;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
 }
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: inherit;
 }
 
+/* Visible focus everywhere — 2px signal-float at 50% + 1px offset. */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ==========================================================================
+   Typography utilities
+   ========================================================================== */
+
+.label {
+  font-family: var(--font-label);
+  font-weight: 600;
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.display {
+  font-size: 2.5rem;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.ink-dim {
+  color: var(--ink-dim);
+}
+
+.ink-faint {
+  color: var(--ink-faint);
+}
+
+/* Status text — mirrors the dot/badge status mapping above, for plain
+   text labels (e.g. a pipeline/board status word next to its dot). */
+.status-running,
+.status-connected,
+.status-open {
+  color: var(--status-running);
+}
+
+.status-paused,
+.status-warn,
+.status-reconnecting,
+.status-connecting {
+  color: var(--status-warn);
+}
+
+.status-error,
+.status-disconnected,
+.status-closed {
+  color: var(--status-error);
+}
+
+.status-stopped,
+.status-idle {
+  color: var(--status-idle);
+}
+
+/* Live value colour — bool ports/values vs. float64 ports/values, the
+   other half of the signal-colour vocabulary (status dots use the
+   .status-* classes above). */
+.value-bool {
+  color: var(--signal-bool);
+}
+
+.value-float {
+  color: var(--signal-float);
+}
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+
 button {
   cursor: pointer;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  color: var(--ink);
+  border-radius: var(--radius-sm);
   padding: 6px 12px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.2;
+  transition: border-color 0.12s ease, background-color 0.12s ease, color 0.12s ease;
 }
 
 button:hover:not(:disabled) {
-  border-color: var(--color-accent);
+  border-color: var(--hairline-strong);
+  background: var(--surface);
+}
+
+button:active:not(:disabled) {
+  background: var(--panel);
 }
 
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
+/* Strong emphasis: contrast/weight, never hue. */
 button.primary {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-  color: var(--color-accent-contrast);
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--panel);
 }
 
-button.danger {
-  border-color: var(--color-danger);
-  color: var(--color-danger);
+button.primary:hover:not(:disabled) {
+  background: var(--ink-dim);
+  border-color: var(--ink-dim);
 }
+
+/* Quiet: no border, transparent, for secondary/inline actions. */
+button.quiet,
+button.btn-quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-dim);
+}
+
+button.quiet:hover:not(:disabled),
+button.btn-quiet:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* Danger: text + border only, never a filled red block. */
+button.danger {
+  background: transparent;
+  border-color: var(--hairline);
+  color: var(--signal-alert);
+}
+
+button.danger:hover:not(:disabled) {
+  border-color: var(--signal-alert);
+  background: color-mix(in srgb, var(--signal-alert) 10%, transparent);
+}
+
+button.danger-icon {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-faint);
+  padding: 2px 6px;
+}
+
+button.danger-icon:hover:not(:disabled) {
+  color: var(--signal-alert);
+  background: color-mix(in srgb, var(--signal-alert) 10%, transparent);
+}
+
+/* ==========================================================================
+   Inputs
+   ========================================================================== */
 
 input,
-select {
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+select,
+textarea {
+  background: var(--raised);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
   padding: 6px 8px;
+  font-size: 0.8125rem;
+  color: var(--ink);
 }
 
-table {
-  width: 100%;
-  border-collapse: collapse;
+input::placeholder,
+textarea::placeholder {
+  color: var(--ink-faint);
 }
 
-th,
-td {
-  text-align: left;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--color-border);
+input:hover:not(:disabled),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled) {
+  border-color: var(--hairline-strong);
 }
 
-th {
-  color: var(--color-text-dim);
-  font-weight: 600;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+input:disabled,
+select:disabled,
+textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
+
+input[type='checkbox'],
+input[type='radio'] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--ink);
+}
+
+/* ==========================================================================
+   Card / surfaces
+   ========================================================================== */
 
 .card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
 }
 
+.hairline {
+  border-color: var(--hairline);
+}
+
+.popover {
+  background: var(--raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+}
+
+/* ==========================================================================
+   Form field
+   ========================================================================== */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+}
+
+.field label {
+  font-family: var(--font-label);
+  font-weight: 600;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim);
+}
+
+.field-hint {
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+}
+
+.field-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* ==========================================================================
+   Table — the one list-view system, shared by Boards / Devices / Pipelines
+   and the Dashboard's device/pipeline sections.
+
+   API:
+     <table class="data-table">
+       <thead><tr><th>Name</th> … <th><span class="sr-only">Actions</span></th></tr></thead>
+       <tbody>
+         <tr>
+           <td data-label="Name">…</td>
+           <td class="cell-mono" data-label="Pin">…</td>       -- ids/identifiers
+           <td class="cell-num" data-label="Tick">…</td>        -- right-aligned numerics
+           <td class="cell-actions" data-label="">…</td>        -- row actions, .quiet buttons
+         </tr>
+         <tr class="table-empty"><td :colspan="n">No rows yet.</td></tr>
+       </tbody>
+     </table>
+
+   `data-label` mirrors each column's `th` text and drives the <640px
+   stacked reflow — set it on every <td> (empty string for the actions
+   column, which has no visible label).
+   ========================================================================== */
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.data-table th {
+  font-family: var(--font-label);
+  font-weight: 600;
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  text-align: left;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.data-table td {
+  padding: var(--space-3) var(--space-4);
+  vertical-align: middle;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 0.875rem;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table tbody tr:hover {
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+
+.data-table tbody tr.row-clickable {
+  cursor: pointer;
+}
+
+/* Numeric / identifier cells: pin numbers, ids, tick rates, port paths,
+   firmware strings, live values — always mono + tabular-nums. */
+.cell-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.cell-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Action cells: right-aligned, .quiet buttons. Always present for
+   keyboard users — never display:none — just visually quiet until the
+   row is hovered or a child has focus. */
+.cell-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.cell-actions .row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.data-table tbody tr:hover .cell-actions .row-actions,
+.data-table tbody tr:focus-within .cell-actions .row-actions,
+.cell-actions .row-actions:focus-within {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cell-actions .row-actions {
+    transition: none;
+  }
+}
+
+/* Empty state: a single row spanning every column. */
+.table-empty td {
+  text-align: center;
+  padding: var(--space-8) var(--space-4);
+  color: var(--ink-dim);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Below 640px: each row reflows into a stacked block, each cell into a
+   label/value line using the th text captured in data-label. */
+@media (max-width: 640px) {
+  .data-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  .data-table,
+  .data-table tbody,
+  .data-table tr {
+    display: block;
+    width: 100%;
+  }
+
+  .data-table tbody tr {
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--hairline-strong);
+  }
+
+  .data-table tbody tr:last-child {
+    border-bottom: none;
+  }
+
+  .data-table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-1) var(--space-1);
+    border-bottom: none;
+    text-align: right;
+  }
+
+  .data-table td[data-label]::before {
+    content: attr(data-label);
+    font-family: var(--font-label);
+    font-weight: 600;
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-faint);
+    text-align: left;
+  }
+
+  .data-table td[data-label='']::before {
+    content: none;
+  }
+
+  .cell-actions,
+  .cell-actions .row-actions {
+    opacity: 1;
+  }
+
+  .cell-actions {
+    justify-content: flex-start;
+  }
+
+  .table-empty td {
+    display: block;
+    text-align: center;
+  }
+
+  .table-empty td::before {
+    content: none;
+  }
+}
+
+/* ==========================================================================
+   Status dot + legacy badge
+   ========================================================================== */
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--status-idle);
+}
+
+.dot.running,
+.dot.connected,
+.dot.open {
+  background: var(--status-running);
+}
+
+.dot.paused,
+.dot.reconnecting,
+.dot.connecting,
+.dot.warn {
+  background: var(--status-warn);
+}
+
+.dot.error,
+.dot.disconnected,
+.dot.closed,
+.dot.alert {
+  background: var(--status-error);
+}
+
+.dot.stopped,
+.dot.idle {
+  background: var(--status-idle);
+}
+
+.dot-pulse {
+  animation: dot-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot-pulse {
+    animation: none;
+  }
+}
+
+@keyframes dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Legacy pill badge (pre-redesign markup still in use by unmigrated views):
+   restyled as condensed uppercase text with a status dot, no filled pill. */
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
+  gap: var(--space-1);
+  font-family: var(--font-label);
   font-weight: 600;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim);
 }
 
-.badge.running {
-  color: var(--color-badge-running);
-  background: color-mix(in srgb, var(--color-badge-running) 15%, transparent);
+.badge::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-idle);
+}
+
+.badge.running,
+.badge.connected,
+.badge.open {
+  color: var(--status-running);
+}
+
+.badge.running::before,
+.badge.connected::before,
+.badge.open::before {
+  background: var(--status-running);
+}
+
+.badge.paused,
+.badge.reconnecting,
+.badge.connecting {
+  color: var(--status-warn);
+}
+
+.badge.paused::before,
+.badge.reconnecting::before,
+.badge.connecting::before {
+  background: var(--status-warn);
+}
+
+.badge.error,
+.badge.disconnected,
+.badge.closed {
+  color: var(--status-error);
+}
+
+.badge.error::before,
+.badge.disconnected::before,
+.badge.closed::before {
+  background: var(--status-error);
 }
 
 .badge.stopped {
-  color: var(--color-badge-stopped);
-  background: color-mix(in srgb, var(--color-badge-stopped) 15%, transparent);
+  color: var(--ink-dim);
 }
 
-.badge.error {
-  color: var(--color-badge-error);
-  background: color-mix(in srgb, var(--color-badge-error) 15%, transparent);
+.badge.stopped::before {
+  background: var(--status-idle);
 }
 
-.badge.paused {
-  color: var(--color-badge-paused);
-  background: color-mix(in srgb, var(--color-badge-paused) 15%, transparent);
-}
-
-/* Board statuses (docs/10-api.md's board.Status) reuse the pipeline-status
-   badge palette: connected~running, disconnected~stopped, reconnecting/
-   error map onto paused/error directly. */
-.badge.connected {
-  color: var(--color-badge-running);
-  background: color-mix(in srgb, var(--color-badge-running) 15%, transparent);
-}
-
-.badge.disconnected {
-  color: var(--color-badge-stopped);
-  background: color-mix(in srgb, var(--color-badge-stopped) 15%, transparent);
-}
-
-.badge.reconnecting {
-  color: var(--color-badge-paused);
-  background: color-mix(in srgb, var(--color-badge-paused) 15%, transparent);
-}
+/* ==========================================================================
+   Empty / loading states
+   ========================================================================== */
 
 .empty-state {
   text-align: center;
-  padding: 48px 24px;
-  color: var(--color-text-dim);
+  padding: var(--space-12) var(--space-6);
+  color: var(--ink-dim);
 }
 
 .empty-state h3 {
-  color: var(--color-text);
-  margin: 8px 0;
+  color: var(--ink);
+  margin: var(--space-2) 0;
 }
 
 .skeleton {
-  color: var(--color-text-dim);
-  padding: 24px;
+  color: var(--ink-dim);
+  padding: var(--space-6);
 }
 
 .stale {
   opacity: 0.5;
 }
 
+/* ==========================================================================
+   Dialog
+   ========================================================================== */
+
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  background: rgb(0 0 0 / 45%);
+  background: rgb(0 0 0 / 55%);
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: var(--space-4);
   z-index: 100;
 }
 
 .dialog {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: 20px;
+  background: var(--raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+  padding: var(--space-6);
   width: min(480px, 92vw);
   max-height: 85vh;
   overflow-y: auto;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 12px;
+.dialog h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: var(--space-2);
 }
 
-.field label {
-  font-size: 12px;
-  color: var(--color-text-dim);
-}
-
-.field-hint {
-  font-size: 11px;
-  color: var(--color-text-dim);
+.dialog p {
+  color: var(--ink-dim);
 }
 
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 16px;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
 }
