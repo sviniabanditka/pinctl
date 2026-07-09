@@ -26,11 +26,12 @@ export class ApiError extends Error {
 
 const BASE = '/api/v1'
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(BASE + path, {
     method,
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
   })
 
   if (res.status === 204) {
@@ -52,9 +53,30 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>('GET', path),
+  get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, signal),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body ?? {}),
   patch: <T>(path: string, body: unknown) => request<T>('PATCH', path, body),
   put: <T>(path: string, body: unknown) => request<T>('PUT', path, body),
   delete: <T>(path: string) => request<T>('DELETE', path),
+}
+
+// --- Value history (docs/16-history.md) ---
+
+export interface HistoryQuery {
+  from?: string
+  to?: string
+  bucket?: string
+  limit?: number
+}
+
+/** Builds the GET /devices/{id}/history path + query string. Exported so the
+ * history store's URL construction is testable without mocking `fetch`. */
+export function historyPath(deviceId: string, query: HistoryQuery): string {
+  const params = new URLSearchParams()
+  if (query.from) params.set('from', query.from)
+  if (query.to) params.set('to', query.to)
+  if (query.bucket) params.set('bucket', query.bucket)
+  if (query.limit !== undefined) params.set('limit', String(query.limit))
+  const qs = params.toString()
+  return `/devices/${deviceId}/history${qs ? `?${qs}` : ''}`
 }

@@ -337,10 +337,26 @@ sudo tar czf pinctl-backup-$(date +%F).tar.gz \
 
 Restoring is the reverse: stop the service, extract over the same paths,
 restore ownership (`chown -R pinctl:pinctl /var/lib/pinctl`), start the
-service. Because persistence is plain JSON files (ADR-3 in
+service. Because devices and pipelines are plain JSON files (ADR-3 in
 [03-architecture.md](./03-architecture.md)), the backup is human-readable
 and diffable — `git init` on `/var/lib/pinctl` is a reasonable poor-man's
 version history if you want one, though pinctl itself doesn't manage that.
+
+**One caveat: `history.db`.** The value history
+([16-history.md](./16-history.md)) is a SQLite database in WAL mode, so it
+has `.db`, `.db-wal` and `.db-shm` files whose contents are only consistent
+with each other at an instant. `tar` on a running service can capture a torn
+copy. Either stop the service first, or back the database up separately while
+it runs:
+
+```sh
+sqlite3 /var/lib/pinctl/history.db ".backup '/tmp/history-backup.db'"
+```
+
+The JSON files have no such problem — they are written atomically (temp file
++ rename), so a `tar` of a running instance always sees a complete one. And
+losing `history.db` entirely costs only the past: pinctl starts with every
+device and pipeline intact.
 
 ## Logs
 

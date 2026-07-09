@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -30,10 +31,18 @@ import (
 	"github.com/sviniabanditka/pinctl/internal/config"
 	"github.com/sviniabanditka/pinctl/internal/devicebus"
 	"github.com/sviniabanditka/pinctl/internal/engine"
+	"github.com/sviniabanditka/pinctl/internal/history"
 	"github.com/sviniabanditka/pinctl/internal/model"
 	"github.com/sviniabanditka/pinctl/internal/mqtt"
 	"github.com/sviniabanditka/pinctl/internal/store"
 )
+
+// historyRetentionInterval is how often, after the once-at-startup pass,
+// the retention sweep runs (docs/16-history.md's "Retention": "deleted
+// hourly"). Not configurable — it just needs to be small relative to
+// history.retention, and an hour comfortably is for every documented
+// default.
+const historyRetentionInterval = time.Hour
 
 // legacyBoardID is the well-known single-board id used by v0.2/v0.3
 // deployments (internal/api's defaultBoardID) before boards.json existed.
@@ -266,6 +275,22 @@ func main() {
 		}
 	}
 
+	// Value history (docs/16-history.md): opened only when enabled, and a
+	// failure to open must never be fatal — pinctl serves and controls
+	// hardware regardless of whether it can keep a history of it, per
+	// docs/16's failure-mode table. deviceBus and st are the same shared
+	// instances every other subscriber/store-user gets.
+	var histStore *history.Store
+	if cfg.History.Enabled {
+		hs, err := history.Open(filepath.Join(cfg.DataDir, "history.db"), cfg.History)
+		if err != nil {
+			log.Printf("pinctl: history: opening: %v; continuing with history disabled", err)
+		} else {
+			histStore = hs
+			apiServer.SetHistoryStore(histStore)
+		}
+	}
+
 	srv := &http.Server{
 		Addr:    cfg.HTTP.Addr,
 		Handler: apiServer,
@@ -275,6 +300,36 @@ func main() {
 	defer stop()
 
 	go deviceBus.Run(ctx)
+
+	// histRecordDone is closed once Record's goroutine returns (which it
+	// does as soon as ctx is done), so shutdown can wait for it before
+	// calling Close — Record must not still be flushing against a closed
+	// database handle.
+	var histRecordDone chan struct{}
+	if histStore != nil {
+		histRecordDone = make(chan struct{})
+		go func() {
+			defer close(histRecordDone)
+			histStore.Record(ctx, deviceBus, st)
+		}()
+		go func() {
+			if err := histStore.Retain(time.Now()); err != nil {
+				log.Printf("pinctl: history: retention: %v", err)
+			}
+			ticker := time.NewTicker(historyRetentionInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case now := <-ticker.C:
+					if err := histStore.Retain(now); err != nil {
+						log.Printf("pinctl: history: retention: %v", err)
+					}
+				}
+			}
+		}()
+	}
 
 	if mqttBridge != nil {
 		go func() {
@@ -332,6 +387,12 @@ func main() {
 		apiServer.CloseWS()
 		if closeBoard != nil {
 			closeBoard()
+		}
+		if histStore != nil {
+			<-histRecordDone // Record's final flush must land before Close
+			if err := histStore.Close(); err != nil {
+				log.Printf("pinctl: history: closing: %v", err)
+			}
 		}
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

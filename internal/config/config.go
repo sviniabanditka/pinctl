@@ -26,6 +26,7 @@ type Config struct {
 	Serial  SerialConfig `yaml:"serial"`
 	Log     LogConfig    `yaml:"log"`
 	MQTT    MQTT         `yaml:"mqtt"`
+	History History      `yaml:"history"`
 }
 
 // HTTPConfig is config.yaml's http: section.
@@ -147,6 +148,54 @@ func (m MQTT) validate() error {
 	return nil
 }
 
+// History is config.yaml's history: section (docs/16-history.md
+// "Configuration"). History is on by default: enabled false is what
+// operators set to keep an SD card completely untouched by pinctl's own
+// writes.
+type History struct {
+	Enabled bool `yaml:"enabled"`
+	// Retention is how long a sample lives before the hourly (and
+	// startup) retention pass deletes it.
+	Retention Duration `yaml:"retention"`
+	// Deadband is the minimum raw-counts change (>= 0) that counts as
+	// movement for analog-in devices; booleans ignore it. Shared shape
+	// with MQTT.AnalogDeadband, but expressed as float64 to match
+	// internal/sampling.Policy.Deadband directly.
+	Deadband float64 `yaml:"deadband"`
+	// MinInterval is the floor between two recorded samples for one
+	// device, unless MaxInterval's heartbeat overrides it.
+	MinInterval Duration `yaml:"min_interval"`
+	// MaxInterval is the heartbeat ceiling: a sample is recorded even
+	// with no movement once this much time has passed.
+	MaxInterval Duration `yaml:"max_interval"`
+	// FlushInterval is the batching window: buffered samples are written
+	// in one transaction at most this often (sooner if the buffer fills).
+	FlushInterval Duration `yaml:"flush_interval"`
+}
+
+// validate checks History's fields for internal consistency.
+func (h History) validate() error {
+	if time.Duration(h.Retention) < 0 {
+		return fmt.Errorf("config: history: retention must be >= 0")
+	}
+	if h.Deadband < 0 {
+		return fmt.Errorf("config: history: deadband must be >= 0")
+	}
+	if time.Duration(h.MinInterval) < 0 {
+		return fmt.Errorf("config: history: min_interval must be >= 0")
+	}
+	if time.Duration(h.MaxInterval) < 0 {
+		return fmt.Errorf("config: history: max_interval must be >= 0")
+	}
+	if time.Duration(h.FlushInterval) < 0 {
+		return fmt.Errorf("config: history: flush_interval must be >= 0")
+	}
+	if time.Duration(h.MinInterval) > time.Duration(h.MaxInterval) {
+		return fmt.Errorf("config: history: min_interval must be <= max_interval")
+	}
+	return nil
+}
+
 // resolvePassword fills in m.Password from password_file or the
 // MQTT_PASSWORD environment variable, per docs/15-mqtt-bridge.md
 // "Configuration". password and password_file are mutually exclusive;
@@ -190,6 +239,19 @@ func Default() Config {
 		Serial:  SerialConfig{Baud: 57600},
 		Log:     LogConfig{Level: "info", Format: "text"},
 		MQTT:    defaultMQTT(),
+		History: defaultHistory(),
+	}
+}
+
+// defaultHistory returns docs/16-history.md's documented history: defaults.
+func defaultHistory() History {
+	return History{
+		Enabled:       true,
+		Retention:     Duration(168 * time.Hour),
+		Deadband:      8,
+		MinInterval:   Duration(5 * time.Second),
+		MaxInterval:   Duration(5 * time.Minute),
+		FlushInterval: Duration(5 * time.Second),
 	}
 }
 
@@ -285,6 +347,9 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	if err := cfg.MQTT.validate(); err != nil {
+		return Config{}, err
+	}
+	if err := cfg.History.validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

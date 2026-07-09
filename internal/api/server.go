@@ -16,6 +16,7 @@ import (
 	"github.com/sviniabanditka/pinctl/internal/boardio"
 	"github.com/sviniabanditka/pinctl/internal/devicebus"
 	"github.com/sviniabanditka/pinctl/internal/engine"
+	"github.com/sviniabanditka/pinctl/internal/history"
 	"github.com/sviniabanditka/pinctl/internal/model"
 	"github.com/sviniabanditka/pinctl/internal/store"
 )
@@ -55,7 +56,35 @@ type Server struct {
 	// deviceWatcher is nil unless SetDeviceWatcher was called (mqtt.enabled
 	// in config.yaml). See DeviceWatcher's doc comment.
 	deviceWatcher DeviceWatcher
+
+	// history is nil unless SetHistoryStore was called (history.enabled in
+	// config.yaml, and the database opened successfully). When nil, the
+	// GET .../history endpoint answers 503 history_disabled, and device
+	// delete skips the best-effort samples cleanup.
+	history HistoryStore
 }
+
+// HistoryStore is what the Server needs from internal/history's *Store:
+// query the samples GET /api/v1/devices/{id}/history serves, and clean up
+// a deleted device's samples. Unlike DeviceWatcher/*devicebus.Bus, this is
+// internal/history's own Query/Sample/Query types used directly rather
+// than mirrored locally — the handler has to speak those types anyway to
+// parse query-string params and shape the JSON response, so a narrow
+// mirror interface would buy nothing (there is no "internal/api must not
+// depend on internal/history" architectural rule the way there is for
+// internal/mqtt/internal/devicebus). Wired via SetHistoryStore so tests
+// and a disabled-history instance can supply nil.
+type HistoryStore interface {
+	Query(deviceID string, q history.Query) ([]history.Sample, error)
+	DeleteDevice(deviceID string) error
+}
+
+// SetHistoryStore wires an externally-owned HistoryStore (in practice,
+// cmd/pinctl's *history.Store when history.enabled is true and the
+// database opened successfully) into the Server. Safe to call once,
+// before the server starts handling requests; not safe to call
+// concurrently with in-flight requests.
+func (s *Server) SetHistoryStore(h HistoryStore) { s.history = h }
 
 // notifyDevicesChanged tells deviceWatcher (if any) that the device set
 // changed, so it can republish/remove Home Assistant discovery configs. A
@@ -139,6 +168,7 @@ func NewServer(sess Session, port string, st *store.Store, mgr *engine.Manager, 
 	mux.HandleFunc("PATCH /api/v1/devices/{id}", s.handleUpdateDevice)
 	mux.HandleFunc("DELETE /api/v1/devices/{id}", s.handleDeleteDevice)
 	mux.HandleFunc("POST /api/v1/devices/{id}/write", s.handleWriteDevice)
+	mux.HandleFunc("GET /api/v1/devices/{id}/history", s.handleDeviceHistory)
 
 	mux.HandleFunc("GET /api/v1/pipelines", s.handleListPipelines)
 	mux.HandleFunc("POST /api/v1/pipelines", s.handleCreatePipeline)

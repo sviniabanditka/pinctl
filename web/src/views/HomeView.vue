@@ -16,6 +16,7 @@ import StatusBadge from '../components/StatusBadge.vue'
 import CommandPalette, { type PaletteGroup } from '../components/CommandPalette.vue'
 import DeviceFormDialog from '../components/DeviceFormDialog.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import DeviceHistorySheet from '../components/DeviceHistorySheet.vue'
 import type { BoardEntry, Device, DeviceOptions, DeviceRole, DevicesTopicData, PipelineSummary } from '../api/types'
 
 const boards = useBoardsStore()
@@ -251,6 +252,12 @@ async function writePwm(d: Device, value: number) {
 function pwmValue(d: Device): number {
   const v = devices.liveValues[d.id]?.value
   return typeof v === 'number' ? v : 0
+}
+
+const historyDevice = ref<Device | null>(null)
+
+function openHistory(d: Device) {
+  historyDevice.value = d
 }
 
 // ============================================================================
@@ -492,15 +499,23 @@ function onWindowKeydown(ev: KeyboardEvent) {
             <td class="cell-mono ink-dim" data-label="Board">{{ boardName(d.boardId) }}</td>
             <td class="cell-mono" data-label="Pin">{{ d.pin }}</td>
             <td data-label="Trace">
-              <Sparkline
+              <button
                 v-if="isInput(d)"
-                :values="traces[d.id] ?? []"
-                :bool="isBoolRole(d)"
-                :min="0"
-                :max="isBoolRole(d) ? 1 : 1023"
-                :color="isBoolRole(d) ? 'var(--signal-bool)' : 'var(--signal-float)'"
-                :label="d.name"
-              />
+                type="button"
+                class="sparkline-btn"
+                :aria-label="`View ${d.name} history`"
+                :title="`View ${d.name} history`"
+                @click="openHistory(d)"
+              >
+                <Sparkline
+                  :values="traces[d.id] ?? []"
+                  :bool="isBoolRole(d)"
+                  :min="0"
+                  :max="isBoolRole(d) ? 1 : 1023"
+                  :color="isBoolRole(d) ? 'var(--signal-bool)' : 'var(--signal-float)'"
+                  :label="d.name"
+                />
+              </button>
               <span v-else class="output-pill" :class="{ on: currentValue(d) === true || (typeof currentValue(d) === 'number' && (currentValue(d) as number) > 0) }">
                 <span class="dot" :class="currentValue(d) ? 'connected' : 'idle'" />
                 last written
@@ -545,6 +560,7 @@ function onWindowKeydown(ev: KeyboardEvent) {
             </td>
             <td class="cell-actions" data-label="">
               <span class="row-actions">
+                <button class="quiet" @click="openHistory(d)">History</button>
                 <button class="quiet" @click="openEditDevice(d)">Edit</button>
                 <button class="danger-icon" @click="askDeleteDevice(d)">Delete</button>
               </span>
@@ -685,6 +701,8 @@ function onWindowKeydown(ev: KeyboardEvent) {
     @cancel="deletingPipeline = null"
     @confirm="confirmDeletePipeline"
   />
+
+  <DeviceHistorySheet v-if="historyDevice" :device="historyDevice" @close="historyDevice = null" />
 </template>
 
 <style scoped>
@@ -754,6 +772,19 @@ function onWindowKeydown(ev: KeyboardEvent) {
 .pipeline-name {
   color: var(--ink);
   font-weight: 500;
+}
+
+.sparkline-btn {
+  background: none;
+  border: none;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  line-height: 0;
+  cursor: pointer;
+}
+
+.sparkline-btn:hover {
+  background: var(--surface);
 }
 
 .output-pill {

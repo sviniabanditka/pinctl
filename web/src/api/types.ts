@@ -135,6 +135,27 @@ export interface BoardsTopicData {
   port: string | null
 }
 
+// --- Value history (docs/16-history.md) ---
+
+/** One point in a GET /devices/{id}/history response. `min`/`max` are
+ * present only when the query was bucketed. */
+export interface HistorySample {
+  t: string
+  v: number
+  min?: number
+  max?: number
+}
+
+export interface HistoryResponse {
+  deviceId: string
+  role: DeviceRole
+  from: string
+  to: string
+  /** Echoes the request's `bucket`; absent for a raw-samples query. */
+  bucket?: string
+  samples: HistorySample[]
+}
+
 // --- WebSocket protocol (docs/10-api.md#websocket-apiv1ws) ---
 
 export type WsMessageType = 'subscribe' | 'unsubscribe' | 'ping' | 'pong' | 'event' | 'error'

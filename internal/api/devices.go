@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/sviniabanditka/pinctl/internal/engine"
@@ -128,11 +129,20 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteDevice(r.PathValue("id")); err != nil {
+	id := r.PathValue("id")
+	if err := s.store.DeleteDevice(id); err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	s.notifyDevicesChanged()
+	// Best-effort: history is a cleanup, not the source of truth, so a
+	// failure here is logged and does not fail the delete (docs/16-
+	// history.md: "Deleting a device deletes its samples").
+	if s.history != nil {
+		if err := s.history.DeleteDevice(id); err != nil {
+			log.Printf("api: deleting history for device %s: %v", id, err)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -1,12 +1,12 @@
 package mqtt
 
 import (
-	"math"
 	"time"
 
 	"github.com/sviniabanditka/pinctl/internal/config"
 	"github.com/sviniabanditka/pinctl/internal/engine"
 	"github.com/sviniabanditka/pinctl/internal/model"
+	"github.com/sviniabanditka/pinctl/internal/sampling"
 )
 
 // publishState is what the bridge remembers about the last state publish
@@ -20,39 +20,15 @@ type publishState struct {
 
 // shouldPublish decides whether cur is worth publishing for a device with
 // the given role, per docs/15-mqtt-bridge.md "Publishing policy: deadband
-// and rate":
-//
-//   - the value changed by at least analog_deadband raw counts for
-//     analog-in, or at all for booleans/pwm-out, and at least
-//     min_publish_interval has passed since the last publish, or
-//   - at most max_publish_interval has passed regardless of change (a
-//     heartbeat).
-//
-// The very first observation for a device always publishes (there is
-// nothing to compare against, and no retained value would exist yet).
+// and rate". The rule itself — deadband, min-interval floor, max-interval
+// heartbeat — lives in internal/sampling, shared with the value history
+// recorder (docs/16-history.md); this is just the adapter from the
+// bridge's cfg/publishState shapes to sampling.Policy/State.
 func shouldPublish(prev publishState, role model.DeviceRole, cur engine.Value, now time.Time, cfg config.MQTT) bool {
-	if !prev.valid {
-		return true
+	p := sampling.Policy{
+		Deadband:    float64(cfg.AnalogDeadband),
+		MinInterval: time.Duration(cfg.MinPublishInterval),
+		MaxInterval: time.Duration(cfg.MaxPublishInterval),
 	}
-	since := now.Sub(prev.at)
-	if since >= time.Duration(cfg.MaxPublishInterval) {
-		return true // heartbeat, regardless of change
-	}
-	if !valueChanged(role, prev.value, cur, cfg.AnalogDeadband) {
-		return false
-	}
-	return since >= time.Duration(cfg.MinPublishInterval)
-}
-
-// valueChanged reports whether cur differs enough from prev to count as a
-// change for role: any difference for the boolean roles, at least deadband
-// raw counts for analog-in. pwm-out (also numeric) uses "any change" like
-// the booleans — the deadband exists to tame ADC noise on an *input*, and
-// pwm-out's value only ever moves because something explicitly commanded
-// it to.
-func valueChanged(role model.DeviceRole, prev, cur engine.Value, deadband int) bool {
-	if role == model.RoleAnalogIn {
-		return math.Abs(cur.Float-prev.Float) >= float64(deadband)
-	}
-	return !prev.Equal(cur)
+	return p.Decide(sampling.State{Value: prev.value, At: prev.at, Valid: prev.valid}, role, cur, now)
 }

@@ -80,18 +80,3 @@ func TestShouldPublish_MaxPublishIntervalForcesHeartbeat(t *testing.T) {
 		t.Error("expected a heartbeat publish once max_publish_interval elapses, even with no change")
 	}
 }
-
-func TestValueChanged_AnalogUsesDeadbandBooleansDoNot(t *testing.T) {
-	if valueChanged(model.RoleAnalogIn, engine.FloatValue(100), engine.FloatValue(103), 4) {
-		t.Error("analog: 3 < deadband 4 should not count as changed")
-	}
-	if !valueChanged(model.RoleAnalogIn, engine.FloatValue(100), engine.FloatValue(104), 4) {
-		t.Error("analog: 4 >= deadband 4 should count as changed")
-	}
-	if !valueChanged(model.RoleDigitalIn, engine.BoolValue(false), engine.BoolValue(true), 4) {
-		t.Error("digital-in: any edge should count as changed")
-	}
-	if valueChanged(model.RoleDigitalOut, engine.BoolValue(true), engine.BoolValue(true), 4) {
-		t.Error("digital-out: identical value should not count as changed")
-	}
-}
