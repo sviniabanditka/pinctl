@@ -2,6 +2,8 @@ package engine
 
 import (
 	"fmt"
+	"log"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -203,7 +205,24 @@ func (r *runner) runTick(ctx TickContext, buildSnapshot bool) (failedNode string
 		nodeVals = make(map[string]Value, len(r.graph.Order))
 	}
 
+	// A node's Eval (or a DeviceIO call) runs third-party-ish code on the
+	// pipeline's own goroutine: a panic there would take the whole runtime
+	// down with every other pipeline and board (NFR-REL-2 in
+	// docs/02-requirements.md). Turn it into an ordinary tick error so the
+	// consecutive-failure policy disables just this pipeline. `current`
+	// names the node the panic came from.
+	var current string
+	defer func() {
+		if p := recover(); p != nil {
+			failedNode = current
+			err = fmt.Errorf("node %s panicked: %v", current, p)
+			nodeVals, logEntries = nil, nil
+			log.Printf("engine: pipeline %s: node %s panicked: %v\n%s", r.id, current, p, debug.Stack())
+		}
+	}()
+
 	for _, id := range r.graph.Order {
+		current = id
 		n := r.graph.Nodes[id]
 		in := make([]Value, len(n.inputs))
 		for i := range n.inputs {
