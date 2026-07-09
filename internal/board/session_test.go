@@ -3,6 +3,7 @@ package board
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -145,6 +146,9 @@ func newHandshakedSession(t *testing.T, opts ...Option) (*Session, net.Conn, *re
 	rec := &recorder{}
 
 	go func() {
+		// Session actively queries the version (single 0xF9 byte)
+		// before listening; consume it or net.Pipe deadlocks.
+		io.ReadFull(serverConn, make([]byte, 1))
 		serverConn.Write([]byte{reportVersion, 2, 5})
 
 		readSysexQuery(t, serverConn) // report firmware query
@@ -328,6 +332,7 @@ func TestSessionDiesOnTransportErrorWithoutCrashing(t *testing.T) {
 func TestSessionUnsupportedProtocolVersionFailsPermanently(t *testing.T) {
 	client, serverConn := net.Pipe()
 	go func() {
+		io.ReadFull(serverConn, make([]byte, 1)) // version query
 		// Report protocol version 1.0 (unsupported per
 		// docs/05-serial-protocol.md: major < 2 is a hard failure).
 		serverConn.Write([]byte{reportVersion, 1, 0})
@@ -350,7 +355,16 @@ func TestSessionUnsupportedProtocolVersionFailsPermanently(t *testing.T) {
 func TestSessionHandshakeTimesOutWithNoBoardResponse(t *testing.T) {
 	client, serverConn := net.Pipe()
 	t.Cleanup(func() { client.Close(); serverConn.Close() })
-	// Board never sends anything.
+	// Board never sends anything — but must drain writes, or the
+	// session's version query blocks forever on the synchronous pipe.
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			if _, err := serverConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
 
 	_, err := newSession(client, WithBootDelay(0), WithHandshakeTimeout(50*time.Millisecond))
 	if err == nil {

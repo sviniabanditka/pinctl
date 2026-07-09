@@ -118,14 +118,21 @@ func newSession(t Transport, opts ...Option) (*Session, error) {
 func (s *Session) handshake() error {
 	parser := NewParser()
 
-	msg, err := s.awaitMessageWithTimeout(parser)
+	// Actively query the protocol version instead of relying on the
+	// board's unsolicited boot-time report: opening the port does not
+	// always assert DTR (observed on macOS /dev/cu.*), so the board may
+	// never have reset and its report was sent long before we listened.
+	if err := s.write(EncodeReportVersionQuery()); err != nil {
+		return fmt.Errorf("board: handshake: sending version query: %w", err)
+	}
+	msg, err := s.awaitMatchWithTimeout(parser, func(m Message) bool {
+		_, ok := m.(ProtocolVersionMsg)
+		return ok
+	})
 	if err != nil {
 		return fmt.Errorf("board: handshake: waiting for protocol version: %w", err)
 	}
-	pv, ok := msg.(ProtocolVersionMsg)
-	if !ok {
-		return fmt.Errorf("board: handshake: expected protocol version report, got %T", msg)
-	}
+	pv := msg.(ProtocolVersionMsg)
 	if pv.Major < 2 {
 		return fmt.Errorf("%w: reported %d.%d", ErrUnsupportedProtocolVersion, pv.Major, pv.Minor)
 	}
@@ -134,39 +141,39 @@ func (s *Session) handshake() error {
 	if err := s.write(EncodeReportFirmwareQuery()); err != nil {
 		return fmt.Errorf("board: handshake: sending firmware query: %w", err)
 	}
-	msg, err = s.awaitMessageWithTimeout(parser)
+	msg, err = s.awaitMatchWithTimeout(parser, func(m Message) bool {
+		_, ok := m.(FirmwareMsg)
+		return ok
+	})
 	if err != nil {
 		return fmt.Errorf("board: handshake: waiting for firmware response: %w", err)
 	}
-	fw, ok := msg.(FirmwareMsg)
-	if !ok {
-		return fmt.Errorf("board: handshake: expected firmware response, got %T", msg)
-	}
+	fw := msg.(FirmwareMsg)
 	s.firmwareName, s.firmwareMajor, s.firmwareMinor = fw.Name, fw.Major, fw.Minor
 
 	if err := s.write(EncodeCapabilityQuery()); err != nil {
 		return fmt.Errorf("board: handshake: sending capability query: %w", err)
 	}
-	msg, err = s.awaitMessageWithTimeout(parser)
+	msg, err = s.awaitMatchWithTimeout(parser, func(m Message) bool {
+		_, ok := m.(CapabilityResponseMsg)
+		return ok
+	})
 	if err != nil {
 		return fmt.Errorf("board: handshake: waiting for capability response: %w", err)
 	}
-	capMsg, ok := msg.(CapabilityResponseMsg)
-	if !ok {
-		return fmt.Errorf("board: handshake: expected capability response, got %T", msg)
-	}
+	capMsg := msg.(CapabilityResponseMsg)
 
 	if err := s.write(EncodeAnalogMappingQuery()); err != nil {
 		return fmt.Errorf("board: handshake: sending analog mapping query: %w", err)
 	}
-	msg, err = s.awaitMessageWithTimeout(parser)
+	msg, err = s.awaitMatchWithTimeout(parser, func(m Message) bool {
+		_, ok := m.(AnalogMappingMsg)
+		return ok
+	})
 	if err != nil {
 		return fmt.Errorf("board: handshake: waiting for analog mapping response: %w", err)
 	}
-	mapMsg, ok := msg.(AnalogMappingMsg)
-	if !ok {
-		return fmt.Errorf("board: handshake: expected analog mapping response, got %T", msg)
-	}
+	mapMsg := msg.(AnalogMappingMsg)
 
 	pins := make([]PinCapability, len(capMsg.Pins))
 	pinIndex := make(map[int]PinCapability, len(capMsg.Pins))
@@ -191,15 +198,25 @@ func (s *Session) handshake() error {
 	return nil
 }
 
-// awaitMessageWithTimeout wraps awaitMessage with a fresh
-// s.handshakeTimeout deadline of its own, so each of the four handshake
-// round trips gets its own full timeout budget rather than sharing one
-// deadline across the whole handshake (see WithHandshakeTimeout's doc
-// comment: "how long Open waits for each expected handshake response").
-func (s *Session) awaitMessageWithTimeout(parser *Parser) (Message, error) {
+// awaitMatchWithTimeout blocks until a message matching match arrives,
+// skipping anything else: after a reset the board volunteers reports we
+// didn't ask for (e.g. a firmware report right behind the version report),
+// and a previously configured board may still be streaming analog values.
+// Each call gets a fresh s.handshakeTimeout deadline of its own, so each
+// handshake round trip has its own full timeout budget (see
+// WithHandshakeTimeout's doc comment).
+func (s *Session) awaitMatchWithTimeout(parser *Parser, match func(Message) bool) (Message, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.handshakeTimeout)
 	defer cancel()
-	return s.awaitMessage(ctx, parser)
+	for {
+		msg, err := s.awaitMessage(ctx, parser)
+		if err != nil {
+			return nil, err
+		}
+		if match(msg) {
+			return msg, nil
+		}
+	}
 }
 
 // awaitMessage blocks until parser produces a decoded Message from the

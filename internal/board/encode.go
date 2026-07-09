@@ -25,6 +25,12 @@ func sysex(cmd byte, body ...byte) []byte {
 	return msg
 }
 
+// EncodeReportVersionQuery builds the single-byte Report Version query
+// (0xF9): the board answers with a protocol version report.
+func EncodeReportVersionQuery() []byte {
+	return []byte{reportVersion}
+}
+
 // EncodeReportFirmwareQuery builds the Report Firmware query (0xF0 0x79 0xF7).
 func EncodeReportFirmwareQuery() []byte {
 	return sysex(sysexReportFirmware)
