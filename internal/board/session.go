@@ -3,8 +3,10 @@ package board
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,15 +35,25 @@ import (
 type Session struct {
 	transport Transport
 
+	// portPath is the serial port this session was opened against, set
+	// once (via the internal withPortPath option, from Open) before the
+	// read loop starts — read-only from then on, so it's safe to read
+	// from any goroutine without s.mu. Empty when the session was built
+	// directly over an injected Transport (tests, or newSession callers
+	// that skip Open). Used only for logging.
+	portPath string
+
 	bootDelay          time.Duration
 	handshakeTimeout   time.Duration
 	samplingIntervalMS int
 
 	writeMu sync.Mutex // serializes writes onto the transport
 
-	mu           sync.Mutex
-	capabilities []PinCapability
-	pinIndex     map[int]PinCapability
+	mu            sync.Mutex
+	capabilities  []PinCapability
+	pinIndex      map[int]PinCapability
+	handshakeDone bool // set at the end of handshake(); gates reboot detection
+	onReboot      func()
 
 	firmwareName                 string
 	firmwareMajor, firmwareMinor int
@@ -52,6 +64,13 @@ type Session struct {
 
 	dead    bool
 	deadErr error
+
+	// rebooting single-flights reboot handling: 1 while a reconfiguration
+	// (sampling interval re-arm + onReboot callback) triggered by an
+	// unsolicited post-handshake protocol version / firmware report is in
+	// flight. StandardFirmata emits both back-to-back on boot, and this
+	// coalesces that pair into one reconfiguration instead of two.
+	rebooting int32
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -65,12 +84,19 @@ func Open(portPath string, opts ...Option) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("board: open %s: %w", portPath, err)
 	}
-	s, err := newSession(t, opts...)
+	s, err := newSession(t, append(opts, withPortPath(portPath))...)
 	if err != nil {
 		_ = t.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// withPortPath records portPath on the Session for logging (see
+// Session.portPath's doc comment). Internal-only: applied by Open, after
+// any caller-supplied opts, before the read loop starts.
+func withPortPath(portPath string) Option {
+	return func(s *Session) { s.portPath = portPath }
 }
 
 // defaults match docs/05-serial-protocol.md: ~2s boot delay, a handshake
@@ -80,6 +106,11 @@ const (
 	defaultBootDelay        = 2 * time.Second
 	defaultHandshakeTimeout = 3 * time.Second
 	defaultSamplingInterval = 20
+
+	// rebootCooldown suppresses further reboot signals for this long after
+	// one is handled: a booting board emits a version report and a firmware
+	// report back to back, and both mean the same single reboot.
+	rebootCooldown = 500 * time.Millisecond
 )
 
 // newSession builds a Session over an already-open Transport. It is
@@ -195,6 +226,10 @@ func (s *Session) handshake() error {
 	if err := s.write(EncodeSamplingInterval(s.samplingIntervalMS)); err != nil {
 		return fmt.Errorf("board: handshake: sending sampling interval: %w", err)
 	}
+
+	s.mu.Lock()
+	s.handshakeDone = true
+	s.mu.Unlock()
 	return nil
 }
 
@@ -291,20 +326,96 @@ func (s *Session) readLoop() {
 
 func (s *Session) applyMessage(msg Message) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	switch m := msg.(type) {
 	case DigitalPortMsg:
 		base := m.Port * 8
 		for i := 0; i < 8; i++ {
 			s.digital[base+i] = m.Value&(1<<uint(i)) != 0
 		}
+		s.mu.Unlock()
 	case AnalogValueMsg:
 		s.analog[m.Channel] = m.Value
+		s.mu.Unlock()
+	case ProtocolVersionMsg, FirmwareMsg:
+		// StandardFirmata sends these unprompted, exactly once, right
+		// after boot. Seeing either one again after handshakeDone is set
+		// means the board rebooted mid-session (brownout, another
+		// process toggling DTR, the reset button) — the MCU has forgotten
+		// every pin mode, reporting subscription, and sampling interval
+		// it had. The transport itself is fine (no read/write error), so
+		// this is the only signal we get; see docs/05-serial-protocol.md
+		// "Mid-session board reset".
+		reboot := s.handshakeDone
+		s.mu.Unlock()
+		if reboot {
+			s.triggerReboot()
+		}
 	default:
-		// Protocol version / firmware / capability / analog mapping
-		// messages are only expected during handshake; ignore if a
-		// board sends one again later.
+		// Capability / analog mapping responses are only expected during
+		// handshake; nothing else to do if a board sends one again later
+		// (a reboot is already fully handled via the version/firmware
+		// case above, which fires first).
 	}
+}
+
+// triggerReboot single-flights a post-handshake reboot: it re-sends the
+// sampling interval (session-level state the caller has no way to know
+// about) and then invokes the registered onReboot callback, both off the
+// read loop's goroutine so a callback that itself calls back into the
+// session (e.g. SetPinMode, which writes to the transport and takes s.mu)
+// can never deadlock or stall message parsing. Concurrent/rapid
+// version+firmware reports (StandardFirmata sends both back-to-back on
+// boot) collapse into a single reconfiguration: further signals are
+// ignored while one is already in flight.
+func (s *Session) triggerReboot() {
+	if !atomic.CompareAndSwapInt32(&s.rebooting, 0, 1) {
+		return
+	}
+	go func() {
+		// Hold the single-flight flag for a cooldown after the work is
+		// done, not just during it. Observed on a real Uno: reconfiguring
+		// finishes before the firmware report that trails the boot-time
+		// version report arrives, so the in-flight flag alone coalesces
+		// nothing and the pair fires two reconfigurations.
+		defer func() {
+			time.Sleep(rebootCooldown)
+			atomic.StoreInt32(&s.rebooting, 0)
+		}()
+
+		label := s.portPath
+		if label == "" {
+			label = "session"
+		}
+		log.Printf("board: %s rebooted, reconfiguring", label)
+
+		if err := s.write(EncodeSamplingInterval(s.samplingIntervalMS)); err != nil {
+			log.Printf("board: %s: re-sending sampling interval after reboot: %v", label, err)
+		}
+
+		s.mu.Lock()
+		cb := s.onReboot
+		s.mu.Unlock()
+		if cb != nil {
+			cb()
+		}
+	}()
+}
+
+// SetOnReboot registers fn to be invoked, asynchronously and off the read
+// loop, whenever the session detects the board rebooted mid-session (see
+// applyMessage/triggerReboot). fn is expected to redo per-device
+// reconfiguration the board forgot on reboot (pin modes, reporting, safe
+// values) — it is safe for fn to call back into the session (e.g.
+// SetPinMode).
+//
+// Safe to call once, right after Open/newSession returns and before the
+// session is used by anything else; it must not be called concurrently
+// with in-flight reads (i.e. don't call this from a second goroutine while
+// the session may already be processing incoming messages for it).
+func (s *Session) SetOnReboot(fn func()) {
+	s.mu.Lock()
+	s.onReboot = fn
+	s.mu.Unlock()
 }
 
 func (s *Session) markDead(err error) {

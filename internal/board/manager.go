@@ -478,6 +478,29 @@ func (m *Manager) connect(st *boardState, port string) {
 	boardID := st.board.ID
 	m.mu.Unlock()
 
+	// Wire up mid-session reboot detection before OnReady runs, so a
+	// reboot that happens to land in the (tiny) window right after
+	// handshake but before OnReady's initial pin-mode/safe-value pass
+	// still gets a callback registered — worst case it fires once more
+	// than strictly necessary, never never fires at all. On a detected
+	// reboot, re-run the exact same reconfiguration OnReady does for this
+	// board — don't duplicate its logic. Must be a no-op once the manager
+	// is closed (or this board's session has since been dropped/replaced)
+	// so a reboot signal from a session Close() is racing against can
+	// never resurrect it.
+	sess.SetOnReboot(func() {
+		m.mu.Lock()
+		closed := m.closed
+		current := st.session
+		m.mu.Unlock()
+		if closed || current != sess {
+			return
+		}
+		if m.cfg.OnReady != nil {
+			m.cfg.OnReady(boardID, sess)
+		}
+	})
+
 	if m.cfg.OnReady != nil {
 		m.cfg.OnReady(boardID, sess)
 	}

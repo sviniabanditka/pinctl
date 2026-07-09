@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -70,23 +71,40 @@ func main() {
 		return out
 	}
 
+	// applyDeviceConfig re-applies pin modes and onDisconnect safe-values
+	// for devices on sess — the per-device reconfiguration a board forgets
+	// on any (re)connect, including a mid-session reboot (the board never
+	// closes the fd, so board.Manager's normal reconnect path never runs;
+	// see board.Session.SetOnReboot). Shared by onReady (first
+	// connect/reconnect) and both boards' reboot callbacks below, so
+	// there's exactly one place that knows how to reconfigure a board's
+	// devices.
+	applyDeviceConfig := func(label string, sess boardio.Session, devices []model.Device) {
+		if err := boardio.ApplyPinModes(sess, devices); err != nil {
+			log.Printf("pinctl: board %s: applying pin modes: %v", label, err)
+		}
+		if err := boardio.ApplySafeValues(sess, devices); err != nil {
+			log.Printf("pinctl: board %s: applying onDisconnect safe values: %v", label, err)
+		}
+	}
+
 	// onReady applies pin modes and onDisconnect safe-values for a board's
 	// devices right after its handshake completes, before the board is
 	// marked connected anywhere — see board.ManagerConfig.OnReady's doc
 	// comment for why this ordering is safe-by-construction (docs/07
-	// cross-ref: safe-value must land before the engine's next tick).
-	// restartPipelines is set once the engine manager exists; onReady can
-	// fire before that during the first scan.
+	// cross-ref: safe-value must land before the engine's next tick). It
+	// also runs a second time, later, whenever board.Session detects the
+	// board rebooted mid-session (wired up in the multi-board branch
+	// below) — same reconfiguration, no special-casing needed.
+	// restartPipelines/restartAllPipelines are set once the engine manager
+	// exists; onReady/the dev-mode reboot callback can fire before that
+	// during startup, in which case they're a no-op (there's nothing
+	// running yet to restart).
 	var restartPipelines func(boardID string)
+	var restartAllPipelines func()
 
 	onReady := func(boardID string, sess *board.Session) {
-		devices := devicesForBoard(boardID)
-		if err := boardio.ApplyPinModes(sess, devices); err != nil {
-			log.Printf("pinctl: board %s: applying pin modes: %v", boardID, err)
-		}
-		if err := boardio.ApplySafeValues(sess, devices); err != nil {
-			log.Printf("pinctl: board %s: applying onDisconnect safe values: %v", boardID, err)
-		}
+		applyDeviceConfig(boardID, sess, devicesForBoard(boardID))
 		if restartPipelines != nil {
 			restartPipelines(boardID)
 		}
@@ -111,9 +129,18 @@ func main() {
 		fwName, fwMajor, fwMinor := realSess.Firmware()
 		log.Printf("pinctl: connected: firmware %q %d.%d, %d pins reported", fwName, fwMajor, fwMinor, len(realSess.Capabilities()))
 
-		if err := boardio.ApplyPinModes(realSess, st.ListDevices()); err != nil {
-			log.Printf("pinctl: applying pin modes at startup: %v", err)
-		}
+		applyDeviceConfig(*port, realSess, st.ListDevices())
+
+		// -port has no board.Manager, so nothing else notices a mid-session
+		// reboot (the fd never errors — see docs/05-serial-protocol.md's
+		// "Mid-session board reset"). Re-apply the same device config and
+		// restart any enabled pipeline that isn't running.
+		realSess.SetOnReboot(func() {
+			applyDeviceConfig(*port, realSess, st.ListDevices())
+			if restartAllPipelines != nil {
+				restartAllPipelines()
+			}
+		})
 
 		sess = realSess
 		sessPort = *port
@@ -142,25 +169,42 @@ func main() {
 		}
 	}
 
-	// In multi-board mode the loop above races the first port scan: a
-	// pipeline can burn through its 3-consecutive-failure budget and
-	// auto-disable before its board's handshake finishes. Whenever a board
-	// (re)connects, re-Start every enabled pipeline that references it and
-	// isn't running — Manager.Start hot-swaps, so this is idempotent.
-	restartPipelines = func(boardID string) {
+	// restartIfNotRunning re-Starts every enabled pipeline matched by
+	// match that isn't currently running — Manager.Start hot-swaps, so
+	// this is idempotent. Shared by restartPipelines (multi-board mode,
+	// filtered to one board) and restartAllPipelines (dev mode, no
+	// per-board filter since -port only ever has one board).
+	restartIfNotRunning := func(logPrefix string, match func(p model.Pipeline, devices map[string]model.Device) bool) {
 		devices := devicesByID(st.ListDevices())
 		for _, p := range st.ListPipelines() {
-			if !p.Enabled || !pipelineUsesBoard(p, devices, boardID) {
+			if !p.Enabled || !match(p, devices) {
 				continue
 			}
 			if status, ok := mgr.Status(p.ID); ok && status.State == engine.StateRunning {
 				continue
 			}
-			log.Printf("pinctl: board %s ready: restarting pipeline %s (%s)", boardID, p.ID, p.Name)
+			log.Printf("pinctl: %s: restarting pipeline %s (%s)", logPrefix, p.ID, p.Name)
 			if err := mgr.Start(p, devices, io); err != nil {
 				log.Printf("pinctl: restarting pipeline %s: %v", p.ID, err)
 			}
 		}
+	}
+
+	// In multi-board mode the loop above races the first port scan: a
+	// pipeline can burn through its 3-consecutive-failure budget and
+	// auto-disable before its board's handshake finishes. Whenever a board
+	// (re)connects — including a mid-session reboot, via board.Session's
+	// reboot callback — re-Start every enabled pipeline that references it
+	// and isn't running.
+	restartPipelines = func(boardID string) {
+		restartIfNotRunning(fmt.Sprintf("board %s ready", boardID), func(p model.Pipeline, devices map[string]model.Device) bool {
+			return pipelineUsesBoard(p, devices, boardID)
+		})
+	}
+	// Dev mode's counterpart: no boardID to filter by (-port is always
+	// exactly one board), used from the reboot callback registered above.
+	restartAllPipelines = func() {
+		restartIfNotRunning(fmt.Sprintf("board %s ready", *port), func(model.Pipeline, map[string]model.Device) bool { return true })
 	}
 
 	apiServer := api.NewServer(sess, sessPort, st, mgr, io)

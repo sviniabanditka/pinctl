@@ -20,6 +20,7 @@ the overall system, and how `Session` is consumed by the engine, is covered in
 - [Analog reporting](#analog-reporting)
 - [Digital reporting](#digital-reporting)
 - [Error handling](#error-handling)
+- [Mid-session board reset](#mid-session-board-reset)
 - [Message sequence diagrams](#message-sequence-diagrams)
 - [Limits of Firmata and the v2 path](#limits-of-firmata-and-the-v2-path)
 
@@ -297,6 +298,68 @@ identity as a whole.
 | Board reset on serial open | DTR toggling on port open resets AVR-based Uno/Nano boards (a side effect of the bootloader's auto-reset design, not something pinctl triggers deliberately) | Session waits a fixed **boot delay (~2 s)** after opening the port before sending anything, so the bootloader has finished and StandardFirmata is running and ready to receive; the handshake's own read timeout is set comfortably longer than this delay |
 | Watchdog / health check | No traffic (report or successful write ack-equivalent) seen within a rolling window (e.g. 5× the sampling interval, minimum ~1 s) | Treated the same as a detected I/O error — proactively marks the session `offline` and starts reconnect, rather than waiting for the OS to notice a half-dead connection (a board that's hung but keeps the USB link up would otherwise never be detected) |
 | Write timeout | `DigitalWrite`/`PWMWrite` caller-supplied `ctx` expires before the write is flushed to the port | Return the `ctx` error to the caller (the engine tick treats it as a failed write for that node this tick, per [03-architecture.md](03-architecture.md#b-tick-execution)); does not, by itself, mark the board offline (a single slow write isn't proof of disconnection — the watchdog above is what escalates a *pattern* of no traffic) |
+
+## Mid-session board reset
+
+Opening the serial port isn't the only thing that resets a Uno/Nano's MCU.
+Any of the following can reset the board while pinctl's serial session stays
+open the whole time:
+
+- Another process on the host toggling DTR on the same port (e.g. an IDE's
+  serial monitor, `avrdude`, anything else that opens/probes the port).
+- A brownout (marginal USB power, especially with several boards/peripherals
+  on one hub).
+- The board's physical reset button.
+
+None of these produce a read or write error on the file descriptor — the
+USB-serial bridge and the OS-level port stay perfectly healthy, `go.bug.st/
+serial` never surfaces anything, and `Session.Alive()` keeps reporting
+`true`. But the MCU itself rebooted: StandardFirmata comes back up with
+**zero** pin modes set, **zero** analog/digital reporting subscriptions
+enabled, and its sampling interval back at Firmata's own default — not
+whatever pinctl configured at handshake time. Left undetected, this freezes
+`Session`'s pin-value cache at its last-seen values forever (no more reports
+ever arrive to update it) and silently reverts every output pin pinctl had
+configured back to `INPUT`, while `Session.Alive()` and `board.Manager`'s
+health check both keep reporting the board as healthy.
+
+**Detection signal:** StandardFirmata sends its Protocol Version report
+(`0xF9`) — and, right behind it, a Report Firmware response — completely
+unprompted, exactly once, on every boot (see
+[Session lifecycle, step 3](#3-handshake)). `Session` tracks whether its own
+handshake has completed (`handshakeDone`); a `0xF9` or a firmware report
+arriving on the read loop *after* that point cannot be anything other than
+the board having just rebooted and repeated its boot-time announcement. This
+is the only signal available — Firmata has no explicit "I just reset"
+message — but it's a reliable one: both are otherwise handshake-only
+messages the read loop never sees in steady state.
+
+**What pinctl re-applies:**
+
+- `Session` re-arms the sampling interval itself immediately (`Sampling
+  Interval` sysex, same value as originally configured) — this is session-
+  level state the session owns and the caller has no way to know about.
+- `Session` then invokes a registered callback
+  (`Session.SetOnReboot(fn func())`) **asynchronously, off the read loop** —
+  never synchronously from inside `applyMessage`, since the callback
+  typically calls back into the session (`SetPinMode`, which writes to the
+  transport and takes locks); running it inline would deadlock or stall
+  message parsing for the rest of the board's traffic.
+- StandardFirmata emits the version and firmware reports back-to-back on
+  boot, so `Session` single-flights reboot handling: a second signal
+  arriving while a reconfiguration triggered by the first is still in
+  flight is ignored, coalescing the pair into exactly one
+  reconfiguration.
+- The callback itself is where pin modes, analog/digital reporting, and
+  onDisconnect safe-values get re-applied — those are per-device state
+  `Session` has no model of, so that stays the caller's job. `board.Manager`
+  wires this to re-run the same `OnReady` hook a fresh connect gets (see
+  `ManagerConfig.OnReady`); the `-port` dev-mode path (no `Manager`) wires an
+  equivalent handler directly in `cmd/pinctl`.
+- The board is **not** marked offline and no reconnect/backoff cycle runs —
+  the transport never errored, so there's nothing to reconnect. The board
+  stays `connected` throughout; only its device configuration gets
+  redone.
 
 ## Message sequence diagrams
 

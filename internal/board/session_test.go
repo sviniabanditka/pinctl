@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -350,6 +351,179 @@ func TestSessionUnsupportedProtocolVersionFailsPermanently(t *testing.T) {
 	}
 	client.Close()
 	serverConn.Close()
+}
+
+// --- mid-session reboot detection -----------------------------------------
+
+func TestSessionRebootDetectedFiresCallbackOnceAndReArmsSamplingInterval(t *testing.T) {
+	s, boardConn, rec := newHandshakedSession(t)
+
+	var calls int32
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	s.SetOnReboot(func() {
+		atomic.AddInt32(&calls, 1)
+		entered <- struct{}{}
+		<-release // held open until the test has injected the firmware report too
+	})
+
+	// Board rebooted: re-emits its unsolicited boot report, which should
+	// trigger reconfiguration.
+	if _, err := boardConn.Write([]byte{reportVersion, 2, 5}); err != nil {
+		t.Fatalf("write version report: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("onReboot callback never fired for the version report")
+	}
+
+	// StandardFirmata sends a firmware report right behind the version
+	// report on boot; injected here while the first callback is still in
+	// flight (held on release), so this exercises the single-flight
+	// coalescing deterministically rather than racing callback speed
+	// against write/parse timing.
+	if _, err := boardConn.Write(fixtureFirmwareFrame()); err != nil {
+		t.Fatalf("write firmware report: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	// Give a stray second invocation a chance to land before asserting
+	// there wasn't one.
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("onReboot called %d times, want exactly 1 (version+firmware must coalesce)", got)
+	}
+
+	if !s.Alive() {
+		t.Error("session marked dead after a reboot signal, want still Alive() — the transport is fine")
+	}
+
+	wantSampling := EncodeSamplingInterval(s.samplingIntervalMS)
+	waitFor(t, time.Second, func() bool {
+		return bytes.Contains(rec.Bytes(), wantSampling)
+	})
+}
+
+func TestSessionRebootCallbackRunsOffReadLoopAndCanCallSetPinMode(t *testing.T) {
+	s, boardConn, rec := newHandshakedSession(t)
+
+	done := make(chan error, 1)
+	s.SetOnReboot(func() {
+		// A callback that calls back into the session (SetPinMode writes
+		// to the transport and takes locks) must not deadlock the read
+		// loop that invoked triggerReboot.
+		done <- s.SetPinMode(13, ModeOutput)
+	})
+
+	if _, err := boardConn.Write([]byte{reportVersion, 2, 5}); err != nil {
+		t.Fatalf("write version report: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SetPinMode from within onReboot callback: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("onReboot callback (calling SetPinMode) never completed — read loop likely deadlocked")
+	}
+
+	wantSetMode := EncodeSetPinMode(13, ModeOutput)
+	waitFor(t, time.Second, func() bool {
+		return bytes.Contains(rec.Bytes(), wantSetMode)
+	})
+
+	// The read loop must still be alive and processing messages after the
+	// callback ran (i.e. it never blocked on the callback).
+	if err := s.SetPinMode(2, ModeInput); err != nil {
+		t.Fatalf("SetPinMode after reboot handling: %v", err)
+	}
+}
+
+func TestSessionVersionReportDuringHandshakeDoesNotFireReboot(t *testing.T) {
+	client, serverConn := net.Pipe()
+	t.Cleanup(func() { client.Close(); serverConn.Close() })
+
+	go func() {
+		io.ReadFull(serverConn, make([]byte, 1)) // version query
+		serverConn.Write([]byte{reportVersion, 2, 5})
+
+		readSysexQuery(t, serverConn) // firmware query
+		// Stray duplicate version report arriving before the firmware
+		// reply — awaitMatchWithTimeout must skip it rather than treat it
+		// as a reboot (there's no callback registered yet at this point
+		// anyway, but the handshakeDone flag-gate itself is what's under
+		// test here).
+		serverConn.Write([]byte{reportVersion, 2, 5})
+		serverConn.Write(fixtureFirmwareFrame())
+
+		readSysexQuery(t, serverConn)
+		serverConn.Write(fixtureCapabilityFrame(fixturePinCount))
+
+		readSysexQuery(t, serverConn)
+		serverConn.Write(fixtureAnalogMappingFrame(fixturePinCount))
+
+		buf := make([]byte, 256)
+		for {
+			if _, err := serverConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	var calls int32
+	s, err := newSession(client, WithBootDelay(0), WithHandshakeTimeout(2*time.Second))
+	if err != nil {
+		t.Fatalf("newSession: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	s.SetOnReboot(func() { atomic.AddInt32(&calls, 1) })
+
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Errorf("onReboot called %d times from in-handshake reports, want 0", got)
+	}
+}
+
+func TestSessionCloseDuringInFlightRebootCallbackDoesNotPanic(t *testing.T) {
+	s, boardConn, _ := newHandshakedSession(t)
+
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	s.SetOnReboot(func() {
+		entered <- struct{}{}
+		<-release
+	})
+
+	if _, err := boardConn.Write([]byte{reportVersion, 2, 5}); err != nil {
+		t.Fatalf("write version report: %v", err)
+	}
+
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("onReboot callback never entered")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- s.Close() }()
+
+	// Give Close a moment to reach <-s.done before releasing the
+	// in-flight callback; Close should still return promptly (it only
+	// waits on the read loop, not on the reboot goroutine).
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close during in-flight reboot callback: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return")
+	}
 }
 
 func TestSessionHandshakeTimesOutWithNoBoardResponse(t *testing.T) {

@@ -418,6 +418,26 @@ cache, board registry, the current compiled graph pointer).
   no manual re-enable needed, since "paused" here means "reads return stale/
   writes no-op," not "scheduler stopped."
 
+### Board reboots mid-session
+
+- A board can reset (brownout, another process toggling DTR, the physical
+  reset button) without the serial fd ever erroring — the transport is fine,
+  but the MCU has forgotten every pin mode, reporting subscription, and
+  sampling interval it had. `Session.Alive()` stays `true`; the "board
+  unplugged" path above never triggers.
+- Detected instead via the unsolicited protocol version report
+  StandardFirmata re-emits on boot: `Session` treats one arriving after its
+  own handshake completed as a reboot signal (see
+  [05-serial-protocol.md, Mid-session board reset](./05-serial-protocol.md#mid-session-board-reset)
+  for the wire-level detail).
+- `Session` re-arms the sampling interval itself, then invokes a
+  caller-registered callback (`Session.SetOnReboot`) asynchronously, off the
+  read loop, so the callback is free to call back into the session (e.g.
+  `SetPinMode`) without deadlocking it. `board.Manager` wires this callback
+  to re-run the same `OnReady` reconfiguration (pin modes, onDisconnect safe
+  values) a fresh connect gets — the board stays `connected` throughout,
+  since the transport never dropped.
+
 ### Malformed pipeline
 
 - Caught in `internal/store` at `SavePipeline` time (schema validation, cycle

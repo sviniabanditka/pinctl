@@ -545,6 +545,87 @@ func TestManagerCloseDuringConnectDoesNotLeakOrFireOnReady(t *testing.T) {
 	waitFor(t, time.Second, opener.allOpenedClosed)
 }
 
+// rebootingOpener opens a real (in-memory, net.Pipe-backed) session via
+// newHandshakedSession, then — once, the first time a session is opened —
+// injects an unsolicited post-handshake protocol version report on the
+// fake board's connection shortly after returning, simulating a board that
+// reboots moments after the manager's connect() completes its own
+// handshake. Used to verify Manager wires up Session.SetOnReboot such that
+// a mid-session reboot re-fires OnReady.
+type rebootingOpener struct {
+	t *testing.T
+
+	mu       sync.Mutex
+	n        int
+	injected bool
+}
+
+func (o *rebootingOpener) open(port string) (*Session, error) {
+	s, boardConn, _ := newHandshakedSession(o.t)
+
+	o.mu.Lock()
+	o.n++
+	first := !o.injected
+	if first {
+		o.injected = true
+	}
+	o.mu.Unlock()
+
+	if first {
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			boardConn.Write([]byte{reportVersion, 2, 5})
+		}()
+	}
+	return s, nil
+}
+
+// TestManagerRebootRefiresOnReady covers the mid-session-reboot path end to
+// end at the Manager level: a board that reboots without ever erroring its
+// serial fd (so Manager's own health check in Scan never fires) must still
+// get its OnReady reconfiguration hook (pin modes, safe values, etc.) run
+// again, via the reboot callback Manager registers on the session in
+// connect().
+func TestManagerRebootRefiresOnReady(t *testing.T) {
+	fs := newFakeBoardStore()
+	pl := &fakePortLister{}
+	pl.set(PortInfo{Path: "/dev/ttyACM0", IsUSB: true, VID: "2341", PID: "0043", SerialNumber: "SN1"})
+	opener := &rebootingOpener{t: t}
+
+	var mu sync.Mutex
+	var onReadyCalls int
+	m := NewManager(ManagerConfig{
+		Store:       fs,
+		PortLister:  pl.list,
+		OpenSession: opener.open,
+		Clock:       newFakeClock(),
+		OnReady: func(boardID string, sess *Session) {
+			mu.Lock()
+			onReadyCalls++
+			mu.Unlock()
+		},
+	})
+
+	if err := m.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	id := m.Boards()[0].ID
+	waitForBoardStatus(t, m, id, StatusConnected)
+
+	waitFor(t, time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return onReadyCalls >= 2
+	})
+
+	// The board must still be considered connected/alive — a reboot is
+	// not a transport error.
+	info := waitForBoardStatus(t, m, id, StatusConnected)
+	if info.Status != StatusConnected {
+		t.Errorf("status after reboot = %v, want %v", info.Status, StatusConnected)
+	}
+}
+
 func TestManagerWatchReceivesEvents(t *testing.T) {
 	fs := newFakeBoardStore()
 	pl := &fakePortLister{}
