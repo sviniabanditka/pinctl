@@ -269,6 +269,60 @@ func TestDeleteDevice_ReferencedByPipelineConflict(t *testing.T) {
 
 // TestCreateDevice_AppliesPinMode confirms the create handler calls
 // boardio.ApplyPinModes against the session (not just persists to store).
+// TestWriteDevice_OK covers the manual test write from docs/10-api.md:
+// no enabled pipeline drives the device, so the write reaches s.io.
+func TestWriteDevice_OK(t *testing.T) {
+	st := newTestStore(t)
+	fs := newFakeSession()
+	mgr := engine.NewManager()
+	t.Cleanup(mgr.StopAll)
+	io := newFakeDeviceIO()
+	h := NewServer(fs, "/dev/ttyACM0", st, mgr, io)
+
+	led := createTestDevice(t, h, "LED", 13, "digital-out")
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/devices/"+led.ID+"/write", map[string]any{"value": true})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
+	}
+	v, ok := io.LastWrite(led.ID)
+	if !ok || !v.Equal(engine.BoolValue(true)) {
+		t.Errorf("last write = %+v, ok=%v, want true", v, ok)
+	}
+}
+
+// TestWriteDevice_ConflictWithEnabledPipeline covers docs/10-api.md's
+// "device is driven by an enabled pipeline" 409: handleWriteDevice must
+// refuse with device_driven_by_pipeline exactly as before the move to
+// store.EnabledPipelineWritingDevice (docs/15-mqtt-bridge.md "Commands and
+// the pipeline-conflict rule" reuses the same store method).
+func TestWriteDevice_ConflictWithEnabledPipeline(t *testing.T) {
+	h, _ := newTestServer(t)
+	ldr := createTestDevice(t, h, "LDR", 14, "analog-in")
+	led := createTestDevice(t, h, "LED", 13, "digital-out")
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/pipelines", ldrLedPipelineBody("porch", ldr.ID, led.ID))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create pipeline: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var created model.Pipeline
+	mustDecode(t, rec, &created)
+
+	rec = doRequest(t, h, http.MethodPost, "/api/v1/pipelines/"+created.ID+"/enable", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable pipeline: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = doRequest(t, h, http.MethodPost, "/api/v1/devices/"+led.ID+"/write", map[string]any{"value": true})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	er := decodeError(t, rec)
+	if er.Error.Code != "device_driven_by_pipeline" {
+		t.Errorf("error code = %q, want device_driven_by_pipeline", er.Error.Code)
+	}
+}
+
 func TestCreateDevice_AppliesPinMode(t *testing.T) {
 	h, fs := newTestServer(t)
 

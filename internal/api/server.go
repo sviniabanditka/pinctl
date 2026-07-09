@@ -14,6 +14,7 @@ import (
 
 	"github.com/sviniabanditka/pinctl/internal/board"
 	"github.com/sviniabanditka/pinctl/internal/boardio"
+	"github.com/sviniabanditka/pinctl/internal/devicebus"
 	"github.com/sviniabanditka/pinctl/internal/engine"
 	"github.com/sviniabanditka/pinctl/internal/model"
 	"github.com/sviniabanditka/pinctl/internal/store"
@@ -42,7 +43,23 @@ type Server struct {
 	// board entry from sess/port. Set via SetBoardManager once cmd/pinctl
 	// has constructed the multi-board Manager (docs/12-roadmap.md v0.4).
 	boardMgr *board.Manager
+
+	// bus is nil unless SetDeviceBus was called. When nil,
+	// StartPublishers constructs and runs its own *devicebus.Bus
+	// internally, scoped to its own lifecycle — the behaviour every
+	// existing caller (and test) gets for free. When set, cmd/pinctl owns
+	// constructing and running the bus (so internal/mqtt, docs/15-mqtt-
+	// bridge.md, can share it too); StartPublishers only subscribes.
+	bus *devicebus.Bus
 }
+
+// SetDeviceBus wires an externally-owned *devicebus.Bus into the Server,
+// used by the "devices" WS topic instead of the internally-constructed one
+// StartPublishers would otherwise build. The caller is responsible for
+// running bus.Run under its own lifecycle/context — StartPublishers never
+// runs a bus it didn't construct itself. Safe to call once, before
+// StartPublishers; not safe to call concurrently with in-flight requests.
+func (s *Server) SetDeviceBus(b *devicebus.Bus) { s.bus = b }
 
 // SetBoardManager wires the multi-board Manager into the Server, enabling
 // the real /api/v1/boards endpoints (list/rescan/rename) and per-board

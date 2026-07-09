@@ -14,14 +14,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sviniabanditka/pinctl/internal/engine"
-	"github.com/sviniabanditka/pinctl/internal/model"
+	"github.com/sviniabanditka/pinctl/internal/devicebus"
 )
 
 const (
-	// devicePollInterval matches docs/10-api.md's devices topic throttle
-	// ("coalesced to at most one update per device per ~200ms").
-	devicePollInterval = 200 * time.Millisecond
+	// DevicePollInterval matches docs/10-api.md's devices topic throttle
+	// ("coalesced to at most one update per device per ~200ms"). Exported
+	// so cmd/pinctl can build the shared *devicebus.Bus (docs/15-mqtt-
+	// bridge.md's "one poll, many readers") at the same cadence the WS
+	// devices topic has always polled at.
+	DevicePollInterval = 200 * time.Millisecond
 	// boardPollInterval: board status changes rarely; polling at the same
 	// cadence as devices is cheap (single sess.Alive() call) and keeps the
 	// two publishers on one simple ticker pattern.
@@ -72,8 +74,25 @@ func (s *Server) StartPublishers(ctx context.Context) (stop func()) {
 	pubCtx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 
+	// The devices WS topic is a subscriber of the shared devicebus.Bus
+	// (docs/15-mqtt-bridge.md "one poll, many readers"), not a poller of
+	// its own. If cmd/pinctl handed in an externally-owned bus via
+	// SetDeviceBus, it also owns running it — this only subscribes. If not
+	// (every existing test, and any caller that hasn't been updated to
+	// build one), StartPublishers constructs and runs one internally,
+	// scoped to pubCtx, exactly matching the polling this replaces.
+	bus := s.bus
+	if bus == nil {
+		bus = devicebus.New(s.io, s.store, DevicePollInterval)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bus.Run(pubCtx)
+		}()
+	}
+
 	runners := []func(context.Context){
-		s.runDevicePoller,
+		func(ctx context.Context) { s.runDevicePoller(ctx, bus) },
 		s.runBoardPoller,
 		s.runPipelineStatusPoller,
 	}
@@ -91,38 +110,29 @@ func (s *Server) StartPublishers(ctx context.Context) (stop func()) {
 	}
 }
 
-// runDevicePoller reads every readable device's live value (via s.io, the
-// same engine.DeviceIO the pipeline engine itself reads through) at
-// devicePollInterval and broadcasts on "devices" only when a device's value
-// actually changed since the last poll, per docs/10-api.md's throttle.
-func (s *Server) runDevicePoller(ctx context.Context) {
-	ticker := time.NewTicker(devicePollInterval)
-	defer ticker.Stop()
+// runDevicePoller subscribes to bus and broadcasts every Update it
+// delivers on the "devices" WS topic, until ctx is done. The bus itself
+// does the polling and change-detection (docs/15-mqtt-bridge.md "one poll,
+// many readers"); this is just the WS-hub-shaped consumer of that stream,
+// same payload shape and publish-on-change behaviour as when this function
+// polled the board directly.
+func (s *Server) runDevicePoller(ctx context.Context, bus *devicebus.Bus) {
+	updates, unsubscribe := bus.Subscribe()
+	defer unsubscribe()
 
-	last := make(map[string]engine.Value)
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			for _, d := range s.store.ListDevices() {
-				if d.Role != model.RoleDigitalIn && d.Role != model.RoleAnalogIn {
-					continue // not readable; nothing to publish
-				}
-				v, err := s.io.ReadDevice(d)
-				if err != nil {
-					continue // board offline or pin not yet reporting; skip this poll
-				}
-				if prev, ok := last[d.ID]; ok && prev.Equal(v) {
-					continue
-				}
-				last[d.ID] = v
-				s.hub.broadcast(topicDevices, deviceEvent{
-					DeviceID:  d.ID,
-					Value:     valueJSON(v),
-					Timestamp: time.Now().UTC(),
-				})
+		case u, ok := <-updates:
+			if !ok {
+				return
 			}
+			s.hub.broadcast(topicDevices, deviceEvent{
+				DeviceID:  u.Device.ID,
+				Value:     valueJSON(u.Value),
+				Timestamp: u.At,
+			})
 		}
 	}
 }

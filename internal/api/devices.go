@@ -173,9 +173,9 @@ func (s *Server) handleWriteDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if pl := s.enabledPipelineDriving(d.ID); pl != "" {
+	if plID, _, driven := s.store.EnabledPipelineWritingDevice(d.ID); driven {
 		writeError(w, http.StatusConflict, "device_driven_by_pipeline",
-			"device is driven by enabled pipeline "+pl+"; disable it first")
+			"device is driven by enabled pipeline "+plID+"; disable it first")
 		return
 	}
 
@@ -184,26 +184,4 @@ func (s *Server) handleWriteDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// enabledPipelineDriving returns the ID of an enabled pipeline containing a
-// device-write node targeting deviceID, or "".
-func (s *Server) enabledPipelineDriving(deviceID string) string {
-	for _, p := range s.store.ListPipelines() {
-		if !p.Enabled {
-			continue
-		}
-		for _, n := range p.Nodes {
-			if n.Type != "device-write" {
-				continue
-			}
-			var cfg struct {
-				DeviceID string `json:"deviceId"`
-			}
-			if json.Unmarshal(n.Config, &cfg) == nil && cfg.DeviceID == deviceID {
-				return p.ID
-			}
-		}
-	}
-	return ""
 }

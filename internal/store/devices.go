@@ -118,27 +118,75 @@ func (s *Store) DeleteDevice(id string) error {
 	return nil
 }
 
-// deviceReferencedByPipelineLocked reports whether any in-memory pipeline
-// has a node whose config references deviceID. Node.Config is opaque
-// per-node-type JSON (internal/model), so this only recognizes the
-// convention every device-referencing node type shares: a top-level
-// "deviceId" string field. Caller must hold s.mu.
-func (s *Store) deviceReferencedByPipelineLocked(deviceID string) bool {
-	type nodeDeviceRef struct {
-		DeviceID string `json:"deviceId"`
+// nodeDeviceRef is the shape every device-referencing node type's config
+// shares: a top-level "deviceId" string field (docs/08-node-catalog.md).
+type nodeDeviceRef struct {
+	DeviceID string `json:"deviceId"`
+}
+
+// nodeDeviceID extracts n's "deviceId" config field, if it has one.
+// Node.Config is opaque per-node-type JSON (internal/model); a node type
+// that doesn't follow the deviceId convention (or has an empty one) simply
+// fails to match here — that's not an error, just "doesn't reference a
+// device".
+func nodeDeviceID(n model.Node) (deviceID string, ok bool) {
+	var ref nodeDeviceRef
+	if err := json.Unmarshal(n.Config, &ref); err != nil || ref.DeviceID == "" {
+		return "", false
 	}
+	return ref.DeviceID, true
+}
+
+// deviceReferencedByPipelineLocked reports whether any in-memory pipeline
+// has a node — of any type, enabled or not — whose config references
+// deviceID. This is the broad rule DeleteDevice enforces (docs/09-data-
+// model.md: "a device cannot be deleted while any pipeline still
+// references it"). Contrast EnabledPipelineWritingDevice, which is
+// narrower on purpose: only device-write nodes, only in enabled pipelines.
+// Caller must hold s.mu.
+func (s *Store) deviceReferencedByPipelineLocked(deviceID string) bool {
 	for _, p := range s.pipelines {
 		for _, n := range p.Nodes {
-			var ref nodeDeviceRef
-			if err := json.Unmarshal(n.Config, &ref); err != nil {
-				continue
-			}
-			if ref.DeviceID == deviceID {
+			if id, ok := nodeDeviceID(n); ok && id == deviceID {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// EnabledPipelineWritingDevice reports the id and name of an enabled
+// pipeline whose device-write node targets deviceID, if any. This is the
+// pipeline-conflict rule shared by the manual REST write
+// (POST /devices/{id}/write, docs/10-api.md) and the MQTT bridge's command
+// handler (docs/15-mqtt-bridge.md "Commands and the pipeline-conflict
+// rule") — implemented once here so the two surfaces can't drift apart.
+//
+// It deliberately differs from deviceReferencedByPipelineLocked: that one
+// matches any node (including device-read) in any pipeline (enabled or
+// not), because deleting a device must be blocked by every reference to
+// it. This one only blocks a manual/MQTT write, so it matches only
+// device-write nodes, and only within pipelines that are currently
+// enabled — a device-read reference doesn't drive the pin, and a disabled
+// pipeline doesn't either.
+func (s *Store) EnabledPipelineWritingDevice(deviceID string) (id, name string, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, p := range s.pipelines {
+		if !p.Enabled {
+			continue
+		}
+		for _, n := range p.Nodes {
+			if n.Type != "device-write" {
+				continue
+			}
+			if refID, refOK := nodeDeviceID(n); refOK && refID == deviceID {
+				return p.ID, p.Name, true
+			}
+		}
+	}
+	return "", "", false
 }
 
 // pinInUseLocked reports whether some device other than excludeID already

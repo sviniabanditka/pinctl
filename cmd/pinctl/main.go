@@ -28,6 +28,7 @@ import (
 	"github.com/sviniabanditka/pinctl/internal/board"
 	"github.com/sviniabanditka/pinctl/internal/boardio"
 	"github.com/sviniabanditka/pinctl/internal/config"
+	"github.com/sviniabanditka/pinctl/internal/devicebus"
 	"github.com/sviniabanditka/pinctl/internal/engine"
 	"github.com/sviniabanditka/pinctl/internal/model"
 	"github.com/sviniabanditka/pinctl/internal/store"
@@ -211,6 +212,16 @@ func main() {
 	if boardMgr != nil {
 		apiServer.SetBoardManager(boardMgr)
 	}
+
+	// The one poll driving the "devices" WS topic and, once wired up
+	// (docs/15-mqtt-bridge.md), the MQTT bridge too — "one poll, many
+	// readers". Built and owned here rather than by *api.Server so a
+	// future internal/mqtt package can Subscribe to the same instance
+	// without depending on internal/api. Run under the shutdown ctx
+	// created below, alongside boardMgr.Run and the WS publishers.
+	deviceBus := devicebus.New(io, st, api.DevicePollInterval)
+	apiServer.SetDeviceBus(deviceBus)
+
 	srv := &http.Server{
 		Addr:    cfg.HTTP.Addr,
 		Handler: apiServer,
@@ -218,6 +229,8 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go deviceBus.Run(ctx)
 
 	if boardMgr != nil {
 		go boardMgr.Run(ctx)

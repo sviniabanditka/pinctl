@@ -52,7 +52,13 @@ pinctl/
 
 ## Non-goals (v0.x)
 
-- No cloud, no MQTT/Home Assistant (roadmap item), no auth, no multi-user,
+- No cloud, no auth, no multi-user,
+- No outbound integration **except** the optional MQTT bridge — off by
+  default, publishing to a broker the operator already runs on their own LAN
+  (see [15-mqtt-bridge.md](./15-mqtt-bridge.md)). It observes the runtime;
+  nothing in the runtime depends on it, and with `mqtt.enabled: false` no
+  client is constructed. *Amended 2026-07-09: the original brief listed
+  MQTT/Home Assistant as a flat non-goal.*
 - No custom firmware, no OTA flashing, no realtime guarantees below tick rate,
 - No general-purpose scripting language or interpreter inside nodes — no
   variables, assignment, loops, user-defined functions, state, or I/O. The

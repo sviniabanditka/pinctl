@@ -346,3 +346,89 @@ func TestDeleteDeviceUnreferencedSucceeds(t *testing.T) {
 		t.Fatalf("expected ErrNotFound after delete, got %v", err)
 	}
 }
+
+// TestEnabledPipelineWritingDevice_DiffersFromDeleteReferenceCheck proves
+// deviceReferencedByPipelineLocked (used by DeleteDevice, blocks on *any*
+// reference) and EnabledPipelineWritingDevice (used by the manual/MQTT
+// write path, blocks only on an enabled pipeline's device-write node) are
+// deliberately different rules, not the same check reused two ways:
+//
+//   - a device-read reference blocks delete but not a manual write (the
+//     read doesn't drive the pin, so there's no conflict to enforce), and
+//   - a device-write node in a *disabled* pipeline blocks neither (nothing
+//     is currently driving the pin).
+func TestEnabledPipelineWritingDevice_DiffersFromDeleteReferenceCheck(t *testing.T) {
+	dir := t.TempDir()
+	s := mustOpen(t, dir)
+
+	readDev, err := s.CreateDevice(model.Device{Name: "sensor", BoardID: "brd_1", Pin: 1, Role: model.RoleAnalogIn})
+	if err != nil {
+		t.Fatalf("CreateDevice readDev: %v", err)
+	}
+	writeDev, err := s.CreateDevice(model.Device{Name: "relay", BoardID: "brd_1", Pin: 2, Role: model.RoleDigitalOut})
+	if err != nil {
+		t.Fatalf("CreateDevice writeDev: %v", err)
+	}
+
+	// A device-read reference: blocks DeleteDevice, but must not be
+	// treated as "driving" the device for a manual write.
+	if _, err := s.CreatePipeline(model.Pipeline{
+		Name:   "reads sensor",
+		TickMs: 20,
+		Nodes: []model.Node{
+			{ID: "n1", Type: "device-read", Config: []byte(`{"deviceId":"` + readDev.ID + `"}`)},
+		},
+	}); err != nil {
+		t.Fatalf("CreatePipeline (device-read): %v", err)
+	}
+
+	if !s.deviceReferencedByPipelineLocked(readDev.ID) {
+		t.Errorf("deviceReferencedByPipelineLocked(readDev) = false, want true (device-read reference should block delete)")
+	}
+	if _, _, ok := s.EnabledPipelineWritingDevice(readDev.ID); ok {
+		t.Errorf("EnabledPipelineWritingDevice(readDev) = ok, want false (a device-read reference does not drive the pin)")
+	}
+
+	// A device-write node, but in a pipeline that is never enabled: must
+	// not block a manual write either (nothing is actually driving the
+	// pin — SetEnabled defaults to false and this pipeline is never
+	// enabled).
+	if _, err := s.CreatePipeline(model.Pipeline{
+		Name:   "writes relay (disabled)",
+		TickMs: 20,
+		Nodes: []model.Node{
+			{ID: "n1", Type: "device-write", Config: []byte(`{"deviceId":"` + writeDev.ID + `"}`)},
+		},
+	}); err != nil {
+		t.Fatalf("CreatePipeline (disabled device-write): %v", err)
+	}
+
+	if _, _, ok := s.EnabledPipelineWritingDevice(writeDev.ID); ok {
+		t.Errorf("EnabledPipelineWritingDevice(writeDev) = ok, want false (pipeline is disabled)")
+	}
+	if err := s.DeleteDevice(writeDev.ID); !errors.Is(err, ErrDeviceInUse) {
+		t.Fatalf("DeleteDevice(writeDev): want ErrDeviceInUse (still referenced, disabled or not), got %v", err)
+	}
+
+	// Re-create writeDev (the delete above was rejected, so this just
+	// re-confirms state) and enable the pipeline: now the write really is
+	// driven, and EnabledPipelineWritingDevice must say so.
+	pl, err := s.CreatePipeline(model.Pipeline{
+		Name:   "writes relay (enabled)",
+		TickMs: 20,
+		Nodes: []model.Node{
+			{ID: "n1", Type: "device-write", Config: []byte(`{"deviceId":"` + writeDev.ID + `"}`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreatePipeline (to-be-enabled device-write): %v", err)
+	}
+	if _, err := s.SetEnabled(pl.ID, true); err != nil {
+		t.Fatalf("SetEnabled: %v", err)
+	}
+
+	id, name, ok := s.EnabledPipelineWritingDevice(writeDev.ID)
+	if !ok || id != pl.ID || name != pl.Name {
+		t.Errorf("EnabledPipelineWritingDevice(writeDev) = (%q, %q, %v), want (%q, %q, true)", id, name, ok, pl.ID, pl.Name)
+	}
+}
