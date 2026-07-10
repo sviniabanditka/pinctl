@@ -184,6 +184,7 @@ func TestManagerScanRegistersAndConnectsNewBoard(t *testing.T) {
 
 	var readyBoardID string
 	m := NewManager(ManagerConfig{
+		Allowlist:   []string{"*"}, // tests discover whatever the fake PortLister returns
 		Store:       fs,
 		PortLister:  pl.list,
 		OpenSession: opener.open,
@@ -221,6 +222,7 @@ func TestManagerScanRegistersAndConnectsNewBoard(t *testing.T) {
 func TestManagerUnknownAndOfflineSessionErrors(t *testing.T) {
 	fs := newFakeBoardStore()
 	m := NewManager(ManagerConfig{
+		Allowlist:   []string{"*"}, // tests discover whatever the fake PortLister returns
 		Store:       fs,
 		PortLister:  func() ([]PortInfo, error) { return nil, nil },
 		OpenSession: (&scriptedOpener{t: t}).open,
@@ -251,6 +253,7 @@ func TestManagerReconnectBackoffProgression(t *testing.T) {
 	clk := newFakeClock()
 
 	m := NewManager(ManagerConfig{
+		Allowlist:   []string{"*"}, // tests discover whatever the fake PortLister returns
 		Store:       fs,
 		PortLister:  pl.list,
 		OpenSession: opener.open,
@@ -304,6 +307,7 @@ func TestManagerReconnectSucceedsAfterFailures(t *testing.T) {
 	clk := newFakeClock()
 
 	m := NewManager(ManagerConfig{
+		Allowlist:   []string{"*"}, // tests discover whatever the fake PortLister returns
 		Store:       fs,
 		PortLister:  pl.list,
 		OpenSession: opener.open,
@@ -340,6 +344,7 @@ func TestManagerHealthCheckDetectsDeadSession(t *testing.T) {
 	opener := &scriptedOpener{t: t, fail: map[string]error{}}
 
 	m := NewManager(ManagerConfig{
+		Allowlist:   []string{"*"}, // tests discover whatever the fake PortLister returns
 		Store:       fs,
 		PortLister:  pl.list,
 		OpenSession: opener.open,
@@ -388,6 +393,7 @@ func TestManagerPermanentFailureNotRetried(t *testing.T) {
 	clk := newFakeClock()
 
 	m := NewManager(ManagerConfig{
+		Allowlist:   []string{"*"}, // tests discover whatever the fake PortLister returns
 		Store:       fs,
 		PortLister:  pl.list,
 		OpenSession: opener.open,
@@ -490,6 +496,7 @@ func TestManagerCloseDuringConnectDoesNotLeakOrFireOnReady(t *testing.T) {
 	var onReadyCalled bool
 	var onReadyMu sync.Mutex
 	m := NewManager(ManagerConfig{
+		Allowlist:   []string{"*"}, // tests discover whatever the fake PortLister returns
 		Store:       fs,
 		PortLister:  pl.list,
 		OpenSession: opener.open,
@@ -595,6 +602,7 @@ func TestManagerRebootRefiresOnReady(t *testing.T) {
 	var mu sync.Mutex
 	var onReadyCalls int
 	m := NewManager(ManagerConfig{
+		Allowlist:   []string{"*"}, // tests discover whatever the fake PortLister returns
 		Store:       fs,
 		PortLister:  pl.list,
 		OpenSession: opener.open,
@@ -633,6 +641,7 @@ func TestManagerWatchReceivesEvents(t *testing.T) {
 	opener := &scriptedOpener{t: t, fail: map[string]error{}}
 
 	m := NewManager(ManagerConfig{
+		Allowlist:   []string{"*"}, // tests discover whatever the fake PortLister returns
 		Store:       fs,
 		PortLister:  pl.list,
 		OpenSession: opener.open,
@@ -654,5 +663,26 @@ func TestManagerWatchReceivesEvents(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for a BoardEvent")
+	}
+}
+
+// TestManagerEmptyAllowlistSkipsSerialDiscovery: a network-boards-only
+// install must not enumerate serial devices at all — not merely filter them
+// out afterwards.
+func TestManagerEmptyAllowlistSkipsSerialDiscovery(t *testing.T) {
+	listed := 0
+	m := NewManager(ManagerConfig{
+		Store:      newFakeBoardStore(),
+		Allowlist:  nil,
+		PortLister: func() ([]PortInfo, error) { listed++; return nil, nil },
+		Clock:      newFakeClock(),
+	})
+	t.Cleanup(m.Close)
+
+	if err := m.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if listed != 0 {
+		t.Errorf("PortLister called %d times, want 0", listed)
 	}
 }

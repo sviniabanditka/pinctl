@@ -344,9 +344,17 @@ func (m *Manager) broadcast(ev BoardEvent) {
 // transition for any that have died. Scan itself never blocks on serial
 // I/O — it returns as soon as attempts are launched.
 func (m *Manager) Scan(ctx context.Context) error {
-	ports, err := m.cfg.PortLister()
-	if err != nil {
-		return fmt.Errorf("board: listing ports: %w", err)
+	// An empty allowlist means no serial boards (see MatchesAllowlist).
+	// Don't even enumerate ports: on a network-boards-only install there is
+	// nothing to look at, and enumeration touches every serial device on
+	// the machine.
+	var ports []PortInfo
+	if len(m.cfg.Allowlist) > 0 {
+		var err error
+		ports, err = m.cfg.PortLister()
+		if err != nil {
+			return fmt.Errorf("board: listing ports: %w", err)
+		}
 	}
 
 	now := m.cfg.Clock.Now()

@@ -43,17 +43,28 @@ func DefaultPortLister() ([]PortInfo, error) {
 }
 
 // MatchesAllowlist reports whether portPath is permitted to be opened, per
-// docs/14-deployment.md's serial.allowlist (FR-BOARD-4): an empty allowlist
-// means "allow any" (fine for a single-board dev box); otherwise portPath
-// must match one of the patterns. Patterns are filepath.Match-style globs —
-// a pattern with no glob metacharacters behaves as a plain exact match, so
-// the deployment doc's example of literal paths ("/dev/ttyACM0") works
-// unchanged, while an operator who wants "any ttyACM*" can write that glob.
+// docs/14-deployment.md's serial.allowlist (FR-BOARD-4). Patterns are
+// filepath.Match-style globs — one with no metacharacters behaves as a plain
+// exact match, so literal paths ("/dev/ttyACM0") work unchanged, while an
+// operator who wants "any ttyACM*" writes that glob. `"*"` allows any port.
+//
+// An **empty allowlist matches nothing**. It once meant "allow any", which
+// read as "no ports permitted" and behaved as its opposite — the same trap as
+// a firewall whose empty ruleset passes all traffic. On a machine with other
+// serial devices it enumerated Bluetooth adapters and debug consoles as
+// boards. Callers that want no serial discovery at all should skip the port
+// enumeration entirely rather than rely on this returning false.
 func MatchesAllowlist(portPath string, allowlist []string) bool {
 	if len(allowlist) == 0 {
-		return true
+		return false
 	}
 	for _, pat := range allowlist {
+		// filepath.Match's `*` never crosses a `/`, so it would never match
+		// an absolute device path. Treat a bare "*" as the explicit
+		// "any port" opt-in it reads as.
+		if pat == "*" {
+			return true
+		}
 		if pat == portPath {
 			return true
 		}

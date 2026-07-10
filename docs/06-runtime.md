@@ -94,7 +94,7 @@ in dev), per the brief's fixed decision. Fields:
 |---|---|---|---|
 | `http.addr` | string | `:8080` | Listen address for REST + WebSocket + web UI. |
 | `data_dir` | string | `/var/lib/pinctl` (dev: `~/.pinctl`) | Root directory for device/pipeline JSON files. |
-| `serial.allowlist` | []string | `[]` (empty = allow any) | Serial device paths pinctl is permitted to open, e.g. `/dev/ttyACM0`. Empty list means no restriction; a non-empty list rejects any board not on it. |
+| `serial.allowlist` | []string | `["/dev/ttyACM*", "/dev/ttyUSB*"]` | Serial device paths pinctl may open (filepath.Match globs). An **empty list permits nothing** and skips port enumeration entirely — the setting for a network-boards-only install. `["*"]` permits any port. |
 | `serial.baud` | int | `57600` | Baud rate for Firmata sessions (brief fixes this at Firmata's default). |
 | `log.level` | string | `info` | One of `debug`, `info`, `warn`, `error`. |
 | `log.format` | string | `text` | One of `json`, `text`. `text` is for local dev readability; `json` for production/log aggregation. |

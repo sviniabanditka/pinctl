@@ -178,8 +178,9 @@ http:
 data_dir: /var/lib/pinctl
 
 serial:
-  # Serial device paths pinctl is permitted to open. Empty list ([])
-  # means "allow any" — review this before enabling the service.
+  # Serial device paths pinctl is permitted to open. An empty list ([])
+  # means no serial boards; ["*"] means any port. Omit the key entirely
+  # for the default (/dev/ttyACM*, /dev/ttyUSB*).
   allowlist:
     - /dev/ttyACM0
     - /dev/ttyUSB0

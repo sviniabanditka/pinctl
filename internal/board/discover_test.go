@@ -6,9 +6,9 @@ import (
 	"github.com/sviniabanditka/pinctl/internal/model"
 )
 
-func TestMatchesAllowlist_EmptyAllowsAny(t *testing.T) {
-	if !MatchesAllowlist("/dev/ttyACM0", nil) {
-		t.Error("empty allowlist should allow any path")
+func TestMatchesAllowlist_EmptyAllowsNothing(t *testing.T) {
+	if MatchesAllowlist("/dev/ttyACM0", nil) {
+		t.Error("empty allowlist should permit no path")
 	}
 }
 
@@ -56,5 +56,24 @@ func TestIdentityForPort_Fallback(t *testing.T) {
 	want := model.Identity{Kind: "port-path", Key: "/dev/ttyS0"}
 	if id != want {
 		t.Errorf("identityForPort = %+v, want %+v", id, want)
+	}
+}
+
+// TestMatchesAllowlistEmptyMatchesNothing pins the semantics an earlier
+// version got backwards: an empty allowlist read as "no ports permitted" and
+// behaved as "every port permitted". On a developer's Mac that enumerated
+// the Bluetooth modem and the debug console as Arduino boards.
+func TestMatchesAllowlistEmptyMatchesNothing(t *testing.T) {
+	for _, port := range []string{"/dev/ttyACM0", "/dev/cu.Bluetooth-Incoming-Port", ""} {
+		if MatchesAllowlist(port, nil) {
+			t.Errorf("MatchesAllowlist(%q, nil) = true, want false", port)
+		}
+		if MatchesAllowlist(port, []string{}) {
+			t.Errorf("MatchesAllowlist(%q, []) = true, want false", port)
+		}
+	}
+	// "*" is how an operator opts back in to any port, explicitly.
+	if !MatchesAllowlist("/dev/cu.anything", []string{"*"}) {
+		t.Error(`MatchesAllowlist(_, ["*"]) = false, want true`)
 	}
 }

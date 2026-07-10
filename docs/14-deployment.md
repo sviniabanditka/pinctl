@@ -115,11 +115,16 @@ http:
 data_dir: /var/lib/pinctl
 
 serial:
-  # Serial device paths pinctl is permitted to open (FR-BOARD-4).
-  # Empty list ([]) means "allow any" — fine for a single-user dev box,
-  # NOT recommended once other things on the Pi might also open serial
-  # devices, since pinctl would then compete for/steal a port meant for
-  # something else.
+  # Serial device paths pinctl is permitted to open (FR-BOARD-4). Globs are
+  # filepath.Match patterns; a bare path is an exact match.
+  #
+  #   omitted    -> /dev/ttyACM* and /dev/ttyUSB* (where USB boards appear)
+  #   []         -> no serial boards at all; ports are never even enumerated
+  #   ["*"]      -> any serial port, explicitly
+  #
+  # An empty list means nothing, not everything. Listing every serial device
+  # on the machine would enumerate Bluetooth adapters and debug consoles as
+  # boards, and would let pinctl steal a port meant for something else.
   allowlist:
     - /dev/ttyACM0
     - /dev/ttyUSB0

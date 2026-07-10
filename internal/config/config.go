@@ -307,12 +307,21 @@ func Default() Config {
 	return Config{
 		HTTP:    HTTPConfig{Addr: ":8080"},
 		DataDir: defaultDataDir(),
-		Serial:  SerialConfig{Baud: 57600},
+		Serial:  SerialConfig{Allowlist: defaultSerialAllowlist(), Baud: 57600},
 		Network: defaultNetwork(),
 		Log:     LogConfig{Level: "info", Format: "text"},
 		MQTT:    defaultMQTT(),
 		History: defaultHistory(),
 	}
+}
+
+// defaultSerialAllowlist is what an omitted `serial.allowlist` means: the
+// paths USB-attached boards actually appear at on Linux. It deliberately
+// does not include every serial device on the machine — a Bluetooth adapter
+// or a debug console is not a board. An explicitly empty list disables
+// serial discovery; `"*"` opts back in to any port.
+func defaultSerialAllowlist() []string {
+	return []string{"/dev/ttyACM*", "/dev/ttyUSB*"}
 }
 
 // defaultHistory returns docs/16-history.md's documented history: defaults.
