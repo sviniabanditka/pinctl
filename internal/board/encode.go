@@ -87,6 +87,18 @@ func EncodeAnalogWrite(pin int, value byte) []byte {
 	return sysex(sysexExtendedAnalog, byte(pin), lsb, msb)
 }
 
+// EncodeServoConfig builds the Servo Config sysex (0xF0 0x70 <pin> <min lsb>
+// <min msb> <max lsb> <max msb> 0xF7), per docs/05-serial-protocol.md's
+// Servo subsection: sets a servo-attached pin's pulse-width range (in
+// microseconds) before/after Set Pin Mode switches it to ModeServo. Angle
+// writes themselves reuse Extended Analog (EncodeAnalogWrite), not this
+// message.
+func EncodeServoConfig(pin, minPulseUs, maxPulseUs int) []byte {
+	minLSB, minMSB := encode7Bit(minPulseUs)
+	maxLSB, maxMSB := encode7Bit(maxPulseUs)
+	return sysex(sysexServoConfig, byte(pin), minLSB, minMSB, maxLSB, maxMSB)
+}
+
 // EncodeReportAnalog builds the Analog Reporting toggle (0xC0+channel <0/1>).
 func EncodeReportAnalog(channel int, enable bool) []byte {
 	v := byte(0)

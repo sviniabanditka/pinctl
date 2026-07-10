@@ -22,15 +22,24 @@ type modeRes struct {
 	res  int
 }
 
+// fixturePinModes mirrors the ground-truth capability report from a real
+// Uno running StandardFirmata 2.5: servo capability on pins 2-19 (wider than
+// PWM, since servo pulses are generated in software by the Servo library),
+// PWM only on 3/5/6/9/10/11. Pins 0/1 (RX/TX) get neither.
 func fixturePinModes(pin int) []modeRes {
+	var modes []modeRes
 	switch pin {
 	case 3, 9, 10, 11:
-		return []modeRes{{ModeInput, 1}, {ModeOutput, 1}, {ModePWM, 8}}
+		modes = []modeRes{{ModeInput, 1}, {ModeOutput, 1}, {ModePWM, 8}}
 	case 14, 15:
-		return []modeRes{{ModeInput, 1}, {ModeOutput, 1}, {ModeAnalog, 10}}
+		modes = []modeRes{{ModeInput, 1}, {ModeOutput, 1}, {ModeAnalog, 10}}
 	default:
-		return []modeRes{{ModeInput, 1}, {ModeOutput, 1}}
+		modes = []modeRes{{ModeInput, 1}, {ModeOutput, 1}}
 	}
+	if pin >= 2 {
+		modes = append(modes, modeRes{ModeServo, 14})
+	}
+	return modes
 }
 
 func encodeSysexFrame(cmd byte, body ...byte) []byte {
@@ -304,6 +313,85 @@ func TestSessionAnalogWriteRejectsUnknownPin(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if b := rec.Bytes(); bytes.Contains(b, EncodeAnalogWrite(999, 100)) {
 		t.Errorf("transport recorded bytes for rejected pin: %v", b)
+	}
+}
+
+func TestSessionServoConfigAndWriteEmitExpectedBytes(t *testing.T) {
+	s, _, rec := newHandshakedSession(t)
+
+	if err := s.SetPinMode(2, ModeServo); err != nil {
+		t.Fatalf("SetPinMode(2, ModeServo): %v", err)
+	}
+	if err := s.ServoConfig(2, 544, 2400); err != nil {
+		t.Fatalf("ServoConfig: %v", err)
+	}
+	if err := s.ServoWrite(2, 90); err != nil {
+		t.Fatalf("ServoWrite: %v", err)
+	}
+
+	wantSetMode := EncodeSetPinMode(2, ModeServo)
+	wantServoConfig := EncodeServoConfig(2, 544, 2400)
+	wantServoWrite := EncodeAnalogWrite(2, 90)
+
+	waitFor(t, time.Second, func() bool {
+		b := rec.Bytes()
+		return bytes.Contains(b, wantSetMode) &&
+			bytes.Contains(b, wantServoConfig) &&
+			bytes.Contains(b, wantServoWrite)
+	})
+}
+
+func TestSessionServoWriteRejectsOutOfRangeAngle(t *testing.T) {
+	s, _, rec := newHandshakedSession(t)
+
+	for _, angle := range []int{-1, 181, 360} {
+		if err := s.ServoWrite(2, angle); err == nil {
+			t.Errorf("ServoWrite(2, %d) = nil, want error", angle)
+		}
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if b := rec.Bytes(); bytes.Contains(b, EncodeAnalogWrite(2, 181)) {
+		t.Errorf("transport recorded bytes for out-of-range angle: %v", b)
+	}
+}
+
+func TestSessionServoWriteRejectsNonServoPin(t *testing.T) {
+	s, _, rec := newHandshakedSession(t)
+
+	// Pin 0 (RX) has no servo capability in the fixture.
+	err := s.ServoWrite(0, 90)
+	if !errors.Is(err, ErrUnsupportedMode) {
+		t.Fatalf("ServoWrite(0, 90) = %v, want ErrUnsupportedMode", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if b := rec.Bytes(); bytes.Contains(b, EncodeAnalogWrite(0, 90)) {
+		t.Errorf("transport recorded bytes for rejected pin: %v", b)
+	}
+}
+
+func TestSessionServoConfigRejectsNonServoPin(t *testing.T) {
+	s, _, rec := newHandshakedSession(t)
+
+	// Pin 0 (RX) has no servo capability in the fixture.
+	err := s.ServoConfig(0, 544, 2400)
+	if !errors.Is(err, ErrUnsupportedMode) {
+		t.Fatalf("ServoConfig(0, ...) = %v, want ErrUnsupportedMode", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if b := rec.Bytes(); bytes.Contains(b, EncodeServoConfig(0, 544, 2400)) {
+		t.Errorf("transport recorded bytes for rejected pin: %v", b)
+	}
+}
+
+func TestSessionServoConfigRejectsUnknownPin(t *testing.T) {
+	s, _, _ := newHandshakedSession(t)
+
+	err := s.ServoConfig(999, 544, 2400)
+	if !errors.Is(err, ErrUnknownPin) {
+		t.Fatalf("ServoConfig(999, ...) = %v, want ErrUnknownPin", err)
 	}
 }
 

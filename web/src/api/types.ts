@@ -2,13 +2,17 @@
 // internal/api response shapes (docs/10-api.md). Hand-kept in sync — no
 // server-driven codegen in MVP.
 
-export type DeviceRole = 'digital-in' | 'digital-out' | 'analog-in' | 'pwm-out'
+export type DeviceRole = 'digital-in' | 'digital-out' | 'analog-in' | 'pwm-out' | 'servo'
 
 export interface DeviceOptions {
   pullup?: boolean
   initial?: boolean | number
   onDisconnect?: 'hold' | 'safe-value'
   safeValue?: boolean | number
+  /** servo: SERVO_CONFIG min pulse width in microseconds, default 544 */
+  minPulseUs?: number
+  /** servo: SERVO_CONFIG max pulse width in microseconds, default 2400 */
+  maxPulseUs?: number
 }
 
 export interface Device {
@@ -114,6 +118,7 @@ export interface BoardCapabilities {
   digitalPins: number[]
   analogPins: number[]
   pwmPins: number[]
+  servoPins: number[]
 }
 
 /** GET /api/v1/boards item shape (internal/api/boards.go's boardOut). */

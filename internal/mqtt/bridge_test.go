@@ -175,6 +175,76 @@ func TestBridge_CommandPWMOutWrites200(t *testing.T) {
 	waitForState(t, h, stateTopic("pinctl", "dev_2"), "200", 2*time.Second)
 }
 
+func TestBridge_CommandServoWrites90(t *testing.T) {
+	h := newHarness(t, config.MQTT{})
+	d := testDevice("dev_servo", "brd_1", 11, model.RoleServo)
+	h.store.putDevice(d)
+	stop := runBridge(t, h)
+	defer stop()
+
+	h.clock.Advance(2 * time.Second)
+	h.client.deliver(setTopic("pinctl", "dev_servo"), []byte("90"))
+
+	writes := h.io.writesFor("dev_servo")
+	if len(writes) != 1 || writes[0].Float != 90 {
+		t.Fatalf("writes = %v, want one FloatValue(90)", writes)
+	}
+	waitForState(t, h, stateTopic("pinctl", "dev_servo"), "90", 2*time.Second)
+}
+
+func TestBridge_CommandServo181Rejected(t *testing.T) {
+	h := newHarness(t, config.MQTT{})
+	d := testDevice("dev_servo2", "brd_1", 12, model.RoleServo)
+	h.store.putDevice(d)
+	h.bridge.onConnect(h.client)
+
+	h.client.deliver(setTopic("pinctl", "dev_servo2"), []byte("181"))
+
+	if writes := h.io.writesFor("dev_servo2"); len(writes) != 0 {
+		t.Fatalf("writes = %v, want none for out-of-range payload", writes)
+	}
+}
+
+func TestBridge_CommandServoNonNumericRejected(t *testing.T) {
+	h := newHarness(t, config.MQTT{})
+	d := testDevice("dev_servo3", "brd_1", 13, model.RoleServo)
+	h.store.putDevice(d)
+	h.bridge.onConnect(h.client)
+
+	h.client.deliver(setTopic("pinctl", "dev_servo3"), []byte("abc"))
+
+	if writes := h.io.writesFor("dev_servo3"); len(writes) != 0 {
+		t.Fatalf("writes = %v, want none for a malformed payload", writes)
+	}
+}
+
+func TestBridge_CommandServoRefusedWhenPipelineDrivesDevice(t *testing.T) {
+	h := newHarness(t, config.MQTT{})
+	d := testDevice("dev_servo4", "brd_1", 14, model.RoleServo)
+	h.store.putDevice(d)
+	h.store.setConflict("dev_servo4", "pl_1", "My Pipeline")
+	h.bridge.onConnect(h.client)
+
+	h.bridge.mu.Lock()
+	h.bridge.pubState["dev_servo4"] = publishState{value: engine.FloatValue(45), at: h.clock.Now(), valid: true}
+	h.bridge.mu.Unlock()
+
+	before := h.client.countTopic(stateTopic("pinctl", "dev_servo4"))
+	h.client.deliver(setTopic("pinctl", "dev_servo4"), []byte("90"))
+	after := h.client.countTopic(stateTopic("pinctl", "dev_servo4"))
+
+	if writes := h.io.writesFor("dev_servo4"); len(writes) != 0 {
+		t.Fatalf("writes = %v, want none: device is pipeline-driven", writes)
+	}
+	if after <= before {
+		t.Fatal("expected the device's current state to be republished on refusal")
+	}
+	msg, _ := h.client.find(stateTopic("pinctl", "dev_servo4"))
+	if string(msg.payload) != "45" {
+		t.Errorf("republished state = %q, want 45 (the pre-command value, not 90)", msg.payload)
+	}
+}
+
 func TestBridge_CommandPWMOut300Rejected(t *testing.T) {
 	h := newHarness(t, config.MQTT{})
 	d := testDevice("dev_3", "brd_1", 7, model.RolePWMOut)

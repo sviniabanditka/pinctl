@@ -28,6 +28,8 @@ type Session interface {
 	AnalogWrite(pin int, value byte) error
 	DigitalRead(pin int) (bool, error)
 	AnalogRead(channel int) (int, error)
+	ServoConfig(pin, minPulseUs, maxPulseUs int) error
+	ServoWrite(pin, angle int) error
 }
 
 // NewHandler builds the /api/v1 HTTP handler over sess. port is the serial

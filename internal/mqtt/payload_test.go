@@ -18,6 +18,7 @@ func TestEncodeState(t *testing.T) {
 		{model.RoleDigitalOut, engine.BoolValue(true), "ON"},
 		{model.RoleAnalogIn, engine.FloatValue(512), "512"},
 		{model.RolePWMOut, engine.FloatValue(200), "200"},
+		{model.RoleServo, engine.FloatValue(90), "90"},
 	}
 	for _, tt := range tests {
 		if got := string(encodeState(tt.role, tt.v)); got != tt.want {
@@ -43,6 +44,12 @@ func TestDecodeCommand(t *testing.T) {
 		{"pwm-out out of range", model.RolePWMOut, "300", true, engine.Value{}},
 		{"pwm-out negative", model.RolePWMOut, "-1", true, engine.Value{}},
 		{"pwm-out non-numeric", model.RolePWMOut, "abc", true, engine.Value{}},
+		{"servo in range", model.RoleServo, "90", false, engine.FloatValue(90)},
+		{"servo boundary 180", model.RoleServo, "180", false, engine.FloatValue(180)},
+		{"servo boundary 0", model.RoleServo, "0", false, engine.FloatValue(0)},
+		{"servo out of range", model.RoleServo, "181", true, engine.Value{}},
+		{"servo negative", model.RoleServo, "-1", true, engine.Value{}},
+		{"servo non-numeric", model.RoleServo, "abc", true, engine.Value{}},
 		{"analog-in rejected", model.RoleAnalogIn, "ON", true, engine.Value{}},
 		{"digital-in rejected", model.RoleDigitalIn, "ON", true, engine.Value{}},
 	}

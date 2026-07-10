@@ -27,6 +27,7 @@ const (
 	sysexCapabilityQuery       byte = 0x6B
 	sysexCapabilityResponse    byte = 0x6C
 	sysexExtendedAnalog        byte = 0x6F
+	sysexServoConfig           byte = 0x70
 	sysexSamplingInterval      byte = 0x7A
 	sysexReportFirmware        byte = 0x79
 )
@@ -35,10 +36,12 @@ const (
 // reported per-pin by the Capability Query response.
 type PinMode byte
 
-// Pin modes pinctl cares about. Firmata defines more (SERVO, SHIFT, I2C,
-// ONEWIRE, STEPPER, ENCODER, SERIAL) but none map to a v0.x device role
+// Pin modes pinctl cares about. Firmata defines more (SHIFT, I2C, ONEWIRE,
+// STEPPER, ENCODER, SERIAL) but none of those map to a v0.x device role
 // (see docs/00-design-brief.md's domain model) so they are decoded (for
-// capability reporting) but never set by pinctl.
+// capability reporting) but never set by pinctl. ModeServo is the
+// exception: it backs the "servo" device role (docs/09-data-model.md) and
+// is set by Session.SetPinMode/ServoConfig/ServoWrite.
 const (
 	ModeInput   PinMode = 0x00
 	ModeOutput  PinMode = 0x01

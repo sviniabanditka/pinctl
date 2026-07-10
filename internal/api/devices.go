@@ -13,7 +13,7 @@ const maxDeviceBodyBytes = 1 << 16 // devices.json bodies are small; generous he
 
 func validRole(r model.DeviceRole) bool {
 	switch r {
-	case model.RoleDigitalIn, model.RoleDigitalOut, model.RoleAnalogIn, model.RolePWMOut:
+	case model.RoleDigitalIn, model.RoleDigitalOut, model.RoleAnalogIn, model.RolePWMOut, model.RoleServo:
 		return true
 	}
 	return false
@@ -46,13 +46,13 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validRole(req.Role) {
-		writeBadRequest(w, "role must be one of digital-in, digital-out, analog-in, pwm-out")
+		writeBadRequest(w, "role must be one of digital-in, digital-out, analog-in, pwm-out, servo")
 		return
 	}
 	boardID := req.BoardID
-	if boardID == "" {
-		boardID = defaultBoardID
-	} else if len(s.store.ListBoards()) > 0 {
+	known := s.store.ListBoards()
+	switch {
+	case boardID != "" && len(known) > 0:
 		// Only enforced once a real boards collection exists (multi-board
 		// mode, docs/12-roadmap.md v0.4): a bare store with no registered
 		// boards yet (single-session dev mode, or a fresh test store) keeps
@@ -61,15 +61,36 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "unknown_board", "boardId "+boardID+" does not exist")
 			return
 		}
+	case boardID == "" && len(known) == 1:
+		// One board: the omission is unambiguous. Resolving it here also
+		// means the capability check below has a session to check against —
+		// falling through to defaultBoardID would bind the device to a
+		// board that doesn't exist, silently skipping validation and
+		// leaving a device that can never work.
+		boardID = known[0].ID
+	case boardID == "" && len(known) > 1:
+		writeError(w, http.StatusBadRequest, "unknown_board",
+			"boardId is required when more than one board is registered")
+		return
+	case boardID == "":
+		// No boards collection at all: legacy single-session mode, where
+		// defaultBoardID is the well-known placeholder (see its doc comment).
+		boardID = defaultBoardID
 	}
 
-	created, err := s.store.CreateDevice(model.Device{
+	candidate := model.Device{
 		Name:    req.Name,
 		BoardID: boardID,
 		Pin:     req.Pin,
 		Role:    req.Role,
 		Options: req.Options,
-	})
+	}
+	if msg, unsupported := s.unsupportedPinModeMsg(candidate); unsupported {
+		writeError(w, http.StatusBadRequest, "unsupported_pin_mode", msg)
+		return
+	}
+
+	created, err := s.store.CreateDevice(candidate)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -178,6 +199,13 @@ func (s *Server) handleWriteDevice(w http.ResponseWriter, r *http.Request) {
 		var f float64
 		if err := json.Unmarshal(req.Value, &f); err != nil || f < 0 || f > 255 {
 			writeError(w, http.StatusBadRequest, "bad_request", "pwm-out expects a number 0-255")
+			return
+		}
+		v = engine.FloatValue(f)
+	case model.RoleServo:
+		var f float64
+		if err := json.Unmarshal(req.Value, &f); err != nil || f < 0 || f > 180 {
+			writeError(w, http.StatusBadRequest, "bad_request", "servo expects a number 0-180")
 			return
 		}
 		v = engine.FloatValue(f)

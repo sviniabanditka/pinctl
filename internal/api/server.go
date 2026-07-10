@@ -9,6 +9,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -233,6 +234,58 @@ func (s *Server) devicesMap() map[string]model.Device {
 		m[d.ID] = d
 	}
 	return m
+}
+
+// connectedSessionFor resolves the live Session for boardID, mirroring
+// applyPinModes' fallback (single-session dev mode when boardMgr is nil vs.
+// per-board lookup once a Manager is wired in). ok is false whenever the
+// board is offline/unknown (or single-session mode's sess isn't alive) —
+// callers treat that as "nothing to validate against," per
+// unsupportedPinModeMsg's doc comment.
+func (s *Server) connectedSessionFor(boardID string) (sess Session, ok bool) {
+	if s.boardMgr == nil {
+		return s.sess, s.sess.Alive()
+	}
+	sc, err := s.boardMgr.Session(boardID)
+	if err != nil {
+		return nil, false
+	}
+	return sc, true
+}
+
+// unsupportedPinModeMsg validates candidate's (pin, role) against its
+// target board's actually-reported Firmata pin capabilities, closing the
+// gap where POST /devices previously accepted any pin for any role and let
+// a mismatch (e.g. analog-in on pin 0/RX, servo on a pin the board can't
+// drive one on) surface only as a logged ErrUnsupportedMode later, leaving
+// a device that silently does nothing.
+//
+// When the target board is connected, an incompatible (pin, role) reports
+// unsupported=true with a message naming both. When the board is offline
+// or unknown, validation is skipped (unsupported=false) — device metadata
+// must stay creatable/editable while hardware is away; the mismatch would
+// only surface once the board reconnects and ApplyPinModes' SetPinMode call
+// fails, same as today.
+func (s *Server) unsupportedPinModeMsg(candidate model.Device) (msg string, unsupported bool) {
+	mode, err := boardio.ModeFor(candidate)
+	if err != nil {
+		// Unknown role: validRole already rejected this before we get here
+		// in the create handler; nothing more to check.
+		return "", false
+	}
+	sess, ok := s.connectedSessionFor(candidate.BoardID)
+	if !ok {
+		return "", false
+	}
+	for _, pc := range sess.Capabilities() {
+		if pc.Pin == candidate.Pin {
+			if pc.SupportsMode(mode) {
+				return "", false
+			}
+			break
+		}
+	}
+	return fmt.Sprintf("pin %d does not support role %s", candidate.Pin, candidate.Role), true
 }
 
 // applyPinModes best-effort applies pin modes for devices via boardio,

@@ -45,9 +45,12 @@ Reads the current value of a bound device on every tick.
 - **Behavior / edge cases**:
   - Output type is derived from the referenced device's role at pipeline
     load time, not stored redundantly — if the device's role changes to a
-    non-readable role (`digital-out`, `pwm-out`) after the pipeline was
-    saved, the pipeline fails validation (see referential integrity rules in
-    [09-data-model.md](./09-data-model.md)).
+    non-readable role (`digital-out`, `pwm-out`, `servo`) after the pipeline
+    was saved, the pipeline fails validation (see referential integrity
+    rules in [09-data-model.md](./09-data-model.md)). `servo` is write-only
+    for the same reason `pwm-out` is: there's no board-side "read back the
+    last angle/duty I wrote" in Firmata, so a `servo` device can only ever
+    appear on `device-write`'s side, never `device-read`'s.
   - If the device's board is disconnected/unreachable, `device-read` holds
     its **last known value** and the pipeline is flagged degraded in the UI
     (see [07-pipeline-engine.md](./07-pipeline-engine.md) for the stale-read
@@ -522,18 +525,23 @@ Writes a value to a bound device on every tick.
 
 - **Inputs**: `in` — `bool` (if device role is `digital-out`) or `float64`
   (if device role is `pwm-out`, expected range `0–255` matching Arduino PWM
-  duty resolution).
+  duty resolution, or `servo`, expected range `0–180` degrees).
 - **Outputs**: none.
 - **Config**:
   | Field | Type | Default | Notes |
   |---|---|---|---|
-  | `deviceId` | string | *(required)* | Must reference a device with role `digital-out` or `pwm-out`. |
+  | `deviceId` | string | *(required)* | Must reference a device with role `digital-out`, `pwm-out`, or `servo`. |
 - **Behavior / edge cases**:
   - Writes happen every tick regardless of whether the value changed
     (idempotent write), so a device disconnect/reconnect mid-pipeline
     converges to the correct state on the next tick without extra logic.
   - For `pwm-out`, values are clamped to `0–255` before being sent to the
     board; out-of-range input values are clamped, not rejected.
+  - For `servo`, values are clamped to `0–180` degrees before being sent to
+    the board, same clamp-not-reject policy as `pwm-out` (see
+    [09-data-model.md](./09-data-model.md#device-object) for the role's
+    write-only, angle-only semantics and its `minPulseUs`/`maxPulseUs`
+    options).
   - Two `device-write` nodes (in the same or different pipelines) targeting
     the same `deviceId` is allowed at save time but flagged as a warning in
     the UI (last-write-wins per tick, order is the pipeline's node
@@ -610,7 +618,7 @@ pipeline behavior.
 | `debounce` | transform | `in` (bool or float64) | `out` (same type as `in`) |
 | `edge-detect` | transform | `in` (bool) | `out` (bool) |
 | `expression` | transform | per `config.inputs` (bool or float64, declared order) | `out` (bool or float64) |
-| `device-write` | sink | `in` (bool or float64) | — |
+| `device-write` | sink | `in` (bool or float64; float64 range depends on role — `0–255` for `pwm-out`, `0–180` for `servo`) | — |
 | `log` | sink | `in` (bool or float64) | — |
 
 ---

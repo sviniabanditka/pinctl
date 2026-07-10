@@ -40,6 +40,7 @@ const (
 	RoleDigitalOut DeviceRole = "digital-out"
 	RoleAnalogIn   DeviceRole = "analog-in"
 	RolePWMOut     DeviceRole = "pwm-out"
+	RoleServo      DeviceRole = "servo"
 )
 
 // DeviceOptions carries the per-role options; zero values mean "absent".
@@ -48,6 +49,8 @@ type DeviceOptions struct {
 	Initial      *json.RawMessage `json:"initial,omitempty"`      // outputs: bool or number
 	OnDisconnect string           `json:"onDisconnect,omitempty"` // outputs: "hold" | "safe-value"
 	SafeValue    *json.RawMessage `json:"safeValue,omitempty"`    // outputs, with "safe-value"
+	MinPulseUs   int              `json:"minPulseUs,omitempty"`   // servo: SERVO_CONFIG min pulse width, default 544
+	MaxPulseUs   int              `json:"maxPulseUs,omitempty"`   // servo: SERVO_CONFIG max pulse width, default 2400
 }
 
 // Device is a user-named binding to a board pin.

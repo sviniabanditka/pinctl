@@ -125,7 +125,8 @@ async function onRescan() {
 
 function boardCapabilities(b: BoardEntry): string {
   if (!b.capabilities) return '—'
-  return `${b.capabilities.digitalPins.length} digital · ${b.capabilities.analogPins.length} analog · ${b.capabilities.pwmPins.length} pwm`
+  const c = b.capabilities
+  return `${c.digitalPins.length} digital · ${c.analogPins.length} analog · ${c.pwmPins.length} pwm · ${c.servoPins.length} servo`
 }
 
 const hasConnectedBoard = computed(() => boards.boards.some((b) => b.status === 'connected'))
@@ -554,6 +555,20 @@ function onWindowKeydown(ev: KeyboardEvent) {
                     @change="writePwm(d, Number(($event.target as HTMLInputElement).value))"
                   />
                   <span class="cell-mono pwm-value">{{ pwmValue(d) }}</span>
+                </div>
+              </template>
+              <template v-else-if="d.role === 'servo'">
+                <div class="pwm-control">
+                  <input
+                    type="range"
+                    min="0"
+                    max="180"
+                    :disabled="writeBusy[d.id]"
+                    :value="pwmValue(d)"
+                    :aria-label="`${d.name} servo angle`"
+                    @change="writePwm(d, Number(($event.target as HTMLInputElement).value))"
+                  />
+                  <span class="cell-mono pwm-value">{{ pwmValue(d) }}°</span>
                 </div>
               </template>
               <span v-else class="ink-faint">—</span>

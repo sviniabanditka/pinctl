@@ -40,7 +40,7 @@ func deviceRoleForWrite(role model.DeviceRole) (PortType, bool) {
 	switch role {
 	case model.RoleDigitalOut:
 		return TypeBool, true
-	case model.RolePWMOut:
+	case model.RolePWMOut, model.RoleServo:
 		return TypeFloat64, true
 	default:
 		return 0, false
@@ -306,7 +306,7 @@ func (deviceWriteType) Ports(raw json.RawMessage, devices map[string]model.Devic
 	}
 	pt, ok := deviceRoleForWrite(dev.Role)
 	if !ok {
-		return PortSpec{}, fmt.Errorf("device-write: device %q has role %q, want digital-out or pwm-out", cfg.DeviceID, dev.Role)
+		return PortSpec{}, fmt.Errorf("device-write: device %q has role %q, want digital-out, pwm-out, or servo", cfg.DeviceID, dev.Role)
 	}
 	return PortSpec{Inputs: []Port{{Name: "in", Type: pt, Required: true}}}, nil
 }
@@ -341,8 +341,11 @@ func (n *deviceWriteNode) Eval(_ TickContext, in []Value) ([]Value, error) {
 	if v.Type != n.inType {
 		return nil, fmt.Errorf("device-write %s: got %s input, want %s", n.device.ID, v.Type, n.inType)
 	}
-	if n.device.Role == model.RolePWMOut {
+	switch n.device.Role {
+	case model.RolePWMOut:
 		v.Float = clamp(v.Float, 0, 255)
+	case model.RoleServo:
+		v.Float = clamp(v.Float, 0, 180)
 	}
 	n.lastVal = v
 	return nil, nil

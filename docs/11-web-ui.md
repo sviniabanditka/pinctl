@@ -121,7 +121,7 @@ API calls.
 
 Columns: name (click to inline-rename), identity (`kind:key`, mono, dimmed),
 port, firmware (`name major.minor`, dimmed, `—` while disconnected),
-capabilities (`N digital · N analog · N pwm`, dimmed). A leading `.dot`
+capabilities (`N digital · N analog · N pwm · N servo`, dimmed). A leading `.dot`
 colored by `status` (`connected`/`disconnected`/`reconnecting`/`error`) sits
 in the name cell. **Rescan** (`POST /boards/rescan`) is fire-and-forget; the
 button shows "Scanning…" while in flight and results arrive over the `boards`
@@ -139,17 +139,29 @@ via `.cell-actions`). Trace and Control both branch on role:
 - **Inputs** (`digital-in`/`analog-in`) — Trace is a live [`Sparkline`](#sparklinevue)
   fed by a 60-sample rolling buffer the view keeps per device; Control shows
   `—` (inputs aren't written to).
-- **Outputs** (`digital-out`/`pwm-out`) — Trace is a static "last written"
-  pill (no sparkline; nothing streams *from* an output); Control is a toggle
-  switch for `digital-out` or a `0`–`255` range slider for `pwm-out`, both
-  calling `POST /devices/{id}/write`.
+- **Outputs** (`digital-out`/`pwm-out`/`servo`) — Trace is a static "last
+  written" pill (no sparkline; nothing streams *from* an output); Control is
+  a toggle switch for `digital-out`, a `0`–`255` range slider for `pwm-out`,
+  or a `0`–`180` range slider (value suffixed `°`) for `servo` — all three
+  calling `POST /devices/{id}/write`. The servo slider reuses the PWM
+  control's shape (range input + mono readout beside it); only the range and
+  suffix differ. Live value renders teal (`--signal-float`), same as any
+  other float64 device, since a servo's angle is write-only telemetry
+  reflected back through the same write-observation path pwm-out uses. The
+  History action is available for servo rows exactly as for any other
+  device — servo writes are recorded like any other value.
 
 **Add device** opens `DeviceFormDialog` (name, board — hidden entirely in
 single-board deployments where `GET /boards` returns nothing, letting the
 server's default-board fallback apply — pin, role, then role-specific
 options: `pullup` for `digital-in`; `initial`/`onDisconnect`/`safeValue` for
-the two output roles, `safeValue` only shown once `onDisconnect` is set to
-`safe-value`). Editing the same dialog on an existing device disables
+the three output roles (`initial`/`safeValue` are an angle 0–180 for
+`servo`, a duty cycle 0–255 for `pwm-out`), `safeValue` only shown once
+`onDisconnect` is set to `safe-value`. `servo` additionally shows
+`minPulseUs`/`maxPulseUs` number inputs, mono, defaulting to `544`/`2400`
+(the standard hobby-servo pulse range) with a hint that cheap servos often
+need trimming to reach 0°/180° cleanly — these feed `SERVO_CONFIG`, not the
+angle itself). Editing the same dialog on an existing device disables
 board/pin/role (each carries a "delete and recreate to re-point it" hint) —
 the server rejects `role`/`boardId` on `PATCH`, and the UI additionally
 locks `pin`, which the API doesn't explicitly forbid, to avoid a "silently
@@ -158,7 +170,14 @@ rewires which physical pin this points at" edit.
 **Delete** goes through the shared `ConfirmDialog`; a `409` (referenced by a
 pipeline) surfaces via the error toast, not a dedicated dialog state — see
 [Error toasts](#error-toasts). A manual write's `409` (an enabled pipeline
-drives this device) is handled the same way.
+drives this device) is handled the same way. Creating a device with a role
+the target board's pin can't do (e.g. `servo` on a pin with no timer, or any
+role outside the board's reported capabilities) returns `400
+unsupported_pin_mode` when the board is connected — surfaced via the same
+error toast, naming the pin/role and the board's supported pins in the
+server's own message rather than a client-guessed list. When the board is
+offline the create still succeeds; pin-mode is only checked against a board
+that's actually there to check it against.
 
 ### Pipelines
 

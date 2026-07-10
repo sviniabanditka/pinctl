@@ -76,6 +76,7 @@ inside a pipeline body.
   | `device_in_use` | `409` | `DELETE /devices/{id}` on a device still referenced by a pipeline's nodes. |
   | `device_driven_by_pipeline` | `409` | `POST /devices/{id}/write` while an enabled pipeline has a `device-write` node targeting this device. |
   | `unknown_board` | `400` | `POST /devices` with a `boardId` that doesn't match any known board (multi-board mode only). |
+  | `unsupported_pin_mode` | `400` | `POST /devices` binding a role to a pin the board can't do it on — checked against the board's reported capabilities, and **only while that board is connected**. An offline board accepts the create: device metadata must stay editable while hardware is away, and the mode is validated again on the next connect. |
   | `unknown_pin` | `404` | v0.1 pin endpoints: pin has no analog channel (`?analog=true`), or `board.ErrUnknownPin`. |
   | `unsupported_mode` | `409` | v0.1 `SetPinMode` with a mode the pin doesn't support (`board.ErrUnsupportedMode`). |
   | `session_dead` | `503` | v0.1 endpoints called against a session that's no longer alive (`board.ErrSessionDead`). |

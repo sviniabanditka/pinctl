@@ -124,6 +124,23 @@ func TestApplySafeValues_PWMOut(t *testing.T) {
 	}
 }
 
+func TestApplySafeValues_Servo(t *testing.T) {
+	sess := newFakeSession()
+
+	devices := []model.Device{
+		{ID: "servo", Pin: 2, Role: model.RoleServo, Options: model.DeviceOptions{
+			OnDisconnect: "safe-value",
+			SafeValue:    rawFloat(45),
+		}},
+	}
+	if err := ApplySafeValues(sess, devices); err != nil {
+		t.Fatalf("ApplySafeValues: %v", err)
+	}
+	if sess.lastServoAngle != 45 {
+		t.Errorf("lastServoAngle = %d, want 45", sess.lastServoAngle)
+	}
+}
+
 func TestApplySafeValues_HoldSkipsWrite(t *testing.T) {
 	sess := newFakeSession()
 	sess.digital[13] = true

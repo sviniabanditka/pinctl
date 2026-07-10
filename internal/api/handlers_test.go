@@ -29,11 +29,16 @@ type fakeSession struct {
 	analogWrErr  error
 	digitalRdErr error
 	analogRdErr  error
+	servoCfgErr  error
+	servoWrErr   error
 
-	lastMode board.PinMode
-	lastPin  int
-	lastPWM  byte
-	lastHigh bool
+	lastMode       board.PinMode
+	lastPin        int
+	lastPWM        byte
+	lastHigh       bool
+	lastServoAngle int
+	lastServoMinUs int
+	lastServoMaxUs int
 }
 
 func newFakeSession() *fakeSession {
@@ -47,6 +52,7 @@ func newFakeSession() *fakeSession {
 		caps: []board.PinCapability{
 			{Pin: 13, Modes: map[board.PinMode]int{board.ModeOutput: 1, board.ModeInput: 1, board.ModePWM: 8}},
 			{Pin: 14, Modes: map[board.PinMode]int{board.ModeInput: 1, board.ModeAnalog: 10}, AnalogChannel: 0, HasAnalogChannel: true},
+			{Pin: 2, Modes: map[board.PinMode]int{board.ModeInput: 1, board.ModeOutput: 1, board.ModeServo: 14}},
 		},
 		digital: map[int]bool{},
 		analog:  map[int]int{0: 512},
@@ -102,6 +108,16 @@ func (f *fakeSession) AnalogRead(channel int) (int, error) {
 	return v, nil
 }
 
+func (f *fakeSession) ServoConfig(pin, minPulseUs, maxPulseUs int) error {
+	f.lastPin, f.lastServoMinUs, f.lastServoMaxUs = pin, minPulseUs, maxPulseUs
+	return f.servoCfgErr
+}
+
+func (f *fakeSession) ServoWrite(pin, angle int) error {
+	f.lastPin, f.lastServoAngle = pin, angle
+	return f.servoWrErr
+}
+
 func doRequest(t *testing.T, h http.Handler, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader *bytes.Reader
@@ -153,8 +169,8 @@ func TestGetBoard(t *testing.T) {
 	if resp.ProtocolVersion != "2.5" {
 		t.Errorf("protocolVersion = %q, want 2.5", resp.ProtocolVersion)
 	}
-	if len(resp.Capabilities) != 2 {
-		t.Fatalf("capabilities len = %d, want 2", len(resp.Capabilities))
+	if len(resp.Capabilities) != 3 {
+		t.Fatalf("capabilities len = %d, want 3", len(resp.Capabilities))
 	}
 }
 

@@ -96,6 +96,50 @@ func TestStopPrunesHubClosesSubscribers(t *testing.T) {
 	}
 }
 
+// TestManager_DeviceWrite_Servo runs a full constant -> device-write
+// pipeline against a servo device end to end (through Manager, not just
+// Validate), confirming the write actually reaches DeviceIO.WriteDevice
+// with the constant's float64 value.
+func TestManager_DeviceWrite_Servo(t *testing.T) {
+	devices := devicesByID(
+		model.Device{ID: "arm", Role: model.RoleServo},
+	)
+	p := model.Pipeline{
+		ID:      "servo-write",
+		Enabled: true,
+		TickMs:  20,
+		Nodes: []model.Node{
+			node(t, "n1", "constant", map[string]any{"kind": "float", "value": 90}),
+			node(t, "n2", "device-write", map[string]any{"deviceId": "arm"}),
+		},
+		Edges: []model.Edge{
+			edge("n1.out", "n2.in"),
+		},
+	}
+
+	io := newFakeIO()
+	clk := newFakeClock()
+	tf, tickers := manualTickerFactory()
+	mgr := NewManager(WithClock(clk), WithTickerFactory(tf))
+	t.Cleanup(mgr.StopAll)
+
+	mustNotErr(t, mgr.Start(p, devices, io))
+	mt := <-tickers
+
+	mt.Fire(time.Unix(1, 0))
+	waitForTick(t, mgr, p.ID, 1)
+
+	io.mu.Lock()
+	v, ok := io.writes["arm"]
+	io.mu.Unlock()
+	if !ok {
+		t.Fatal("expected a write to device arm")
+	}
+	if v.Type != TypeFloat64 || v.Float != 90 {
+		t.Errorf("write = %+v, want float64 90", v)
+	}
+}
+
 // TestStopPreservesHubAcrossDisable verifies Stop (unlike Remove) leaves
 // the hub in place, since Stop is also what disabling a pipeline uses
 // (internal/api/pipelines.go's handleDisablePipeline) and a WS subscriber

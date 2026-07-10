@@ -375,7 +375,7 @@ export const NODE_SCHEMAS: Record<string, NodeSchema> = {
     ],
     outputs: [],
     fields: [
-      { key: 'deviceId', label: 'Device', kind: 'deviceRef', default: '', deviceRoles: ['digital-out', 'pwm-out'] },
+      { key: 'deviceId', label: 'Device', kind: 'deviceRef', default: '', deviceRoles: ['digital-out', 'pwm-out', 'servo'] },
     ],
     defaultConfig: () => ({ deviceId: '' }),
     summary: (config, devices) => deviceName(devices, config.deviceId) ?? '(no device)',

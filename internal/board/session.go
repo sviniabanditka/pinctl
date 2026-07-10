@@ -575,6 +575,50 @@ func (s *Session) AnalogWrite(pin int, value byte) error {
 	return s.write(EncodeAnalogWrite(pin, value))
 }
 
+// ServoConfig sets the pulse-width range (microseconds) for a servo-capable
+// pin, via the Servo Config sysex (see docs/05-serial-protocol.md's Servo
+// subsection). Per Firmata, this may be sent before or after SetPinMode
+// switches the pin to ModeServo (SetPinMode/attaching the servo doesn't
+// depend on it having been configured first) — callers (boardio) send it
+// before the first angle write so the servo attaches with the right range
+// from the start.
+func (s *Session) ServoConfig(pin, minPulseUs, maxPulseUs int) error {
+	if err := s.checkAlive(); err != nil {
+		return err
+	}
+	pc, ok := s.pinCapability(pin)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownPin, pin)
+	}
+	if !pc.SupportsMode(ModeServo) {
+		return fmt.Errorf("%w: pin %d, mode %v", ErrUnsupportedMode, pin, ModeServo)
+	}
+	return s.write(EncodeServoConfig(pin, minPulseUs, maxPulseUs))
+}
+
+// ServoWrite sets a servo-attached pin's angle (0-180 degrees), via Extended
+// Analog (the same wire form AnalogWrite uses) — Firmata does not have a
+// separate servo-angle write message; ModeServo is what makes the board
+// interpret an Extended Analog write on that pin as an angle instead of a
+// PWM duty cycle. Kept as its own method (not a widened AnalogWrite) so its
+// 0-180 validation is specific to servo semantics rather than PWM's 0-255.
+func (s *Session) ServoWrite(pin, angle int) error {
+	if err := s.checkAlive(); err != nil {
+		return err
+	}
+	if angle < 0 || angle > 180 {
+		return fmt.Errorf("board: servo angle %d out of range [0, 180]", angle)
+	}
+	pc, ok := s.pinCapability(pin)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownPin, pin)
+	}
+	if !pc.SupportsMode(ModeServo) {
+		return fmt.Errorf("%w: pin %d, mode %v", ErrUnsupportedMode, pin, ModeServo)
+	}
+	return s.write(EncodeAnalogWrite(pin, byte(angle)))
+}
+
 // DigitalRead returns the last known value of a digital pin, from the
 // session's cache. It does not perform a synchronous read against the
 // board — Firmata has no such operation; see

@@ -29,17 +29,24 @@ const form = reactive({
   initial: props.device?.options.initial ?? false,
   onDisconnect: props.device?.options.onDisconnect ?? 'hold',
   safeValue: props.device?.options.safeValue ?? false,
+  minPulseUs: props.device?.options.minPulseUs ?? 544,
+  maxPulseUs: props.device?.options.maxPulseUs ?? 2400,
 })
 
-const isOutput = computed(() => form.role === 'digital-out' || form.role === 'pwm-out')
-const isPwm = computed(() => form.role === 'pwm-out')
+const isOutput = computed(() => form.role === 'digital-out' || form.role === 'pwm-out' || form.role === 'servo')
+const isServo = computed(() => form.role === 'servo')
+// Numeric-valued output roles: pwm-out (0-255 duty cycle) and servo
+// (0-180 degrees). Both need a number input rather than a checkbox for
+// initial/safeValue, unlike digital-out's boolean.
+const isNumeric = computed(() => form.role === 'pwm-out' || form.role === 'servo')
 
-// `initial`/`safeValue` are a boolean for digital-out and a number for
-// pwm-out. Switching roles would otherwise hand a `false` to a number input
-// (or a duty cycle to a checkbox), so re-seed them to the new role's zero.
-watch(isPwm, (pwm) => {
-  if (typeof form.initial !== (pwm ? 'number' : 'boolean')) form.initial = pwm ? 0 : false
-  if (typeof form.safeValue !== (pwm ? 'number' : 'boolean')) form.safeValue = pwm ? 0 : false
+// `initial`/`safeValue` are a boolean for digital-out and a number for the
+// numeric output roles (pwm-out, servo). Switching roles would otherwise
+// hand a `false` to a number input (or a duty cycle/angle to a checkbox),
+// so re-seed them to the new role's zero whenever the numeric-ness changes.
+watch(isNumeric, (numeric) => {
+  if (typeof form.initial !== (numeric ? 'number' : 'boolean')) form.initial = numeric ? 0 : false
+  if (typeof form.safeValue !== (numeric ? 'number' : 'boolean')) form.safeValue = numeric ? 0 : false
 })
 
 function buildOptions(): DeviceOptions {
@@ -48,11 +55,15 @@ function buildOptions(): DeviceOptions {
   }
   if (isOutput.value) {
     const opts: DeviceOptions = {
-      initial: isPwm.value ? Number(form.initial) : !!form.initial,
+      initial: isNumeric.value ? Number(form.initial) : !!form.initial,
       onDisconnect: form.onDisconnect as 'hold' | 'safe-value',
     }
     if (form.onDisconnect === 'safe-value') {
-      opts.safeValue = isPwm.value ? Number(form.safeValue) : !!form.safeValue
+      opts.safeValue = isNumeric.value ? Number(form.safeValue) : !!form.safeValue
+    }
+    if (isServo.value) {
+      opts.minPulseUs = Number(form.minPulseUs)
+      opts.maxPulseUs = Number(form.maxPulseUs)
     }
     return opts
   }
@@ -109,6 +120,7 @@ function onSubmit() {
             <option value="digital-out">digital-out</option>
             <option value="analog-in">analog-in</option>
             <option value="pwm-out">pwm-out</option>
+            <option value="servo">servo</option>
           </select>
           <span v-if="!isEdit" class="field-hint">Role can't be changed after creation.</span>
         </div>
@@ -119,17 +131,43 @@ function onSubmit() {
           </div>
         </template>
 
+        <template v-if="isServo">
+          <div class="field">
+            <label for="dev-min-pulse">Min pulse (µs)</label>
+            <input
+              id="dev-min-pulse"
+              v-model.number="form.minPulseUs"
+              class="mono num"
+              type="number"
+              min="400"
+              max="3000"
+            />
+          </div>
+          <div class="field">
+            <label for="dev-max-pulse">Max pulse (µs)</label>
+            <input
+              id="dev-max-pulse"
+              v-model.number="form.maxPulseUs"
+              class="mono num"
+              type="number"
+              min="400"
+              max="3000"
+            />
+            <span class="field-hint">Standard is 544–2400 µs; cheap servos often need trimming to reach 0°/180° cleanly.</span>
+          </div>
+        </template>
+
         <template v-if="isOutput">
           <div class="field">
-            <label for="dev-initial">Initial value</label>
+            <label for="dev-initial">{{ isServo ? 'Initial angle (°)' : 'Initial value' }}</label>
             <input
-              v-if="isPwm"
+              v-if="isNumeric"
               id="dev-initial"
               v-model.number="form.initial"
               class="mono num"
               type="number"
               min="0"
-              max="255"
+              :max="isServo ? 180 : 255"
             />
             <label v-else class="field-inline"><input v-model="form.initial" type="checkbox" /> On</label>
           </div>
@@ -141,15 +179,15 @@ function onSubmit() {
             </select>
           </div>
           <div v-if="form.onDisconnect === 'safe-value'" class="field">
-            <label for="dev-safe">Safe value</label>
+            <label for="dev-safe">{{ isServo ? 'Safe angle (°)' : 'Safe value' }}</label>
             <input
-              v-if="isPwm"
+              v-if="isNumeric"
               id="dev-safe"
               v-model.number="form.safeValue"
               class="mono num"
               type="number"
               min="0"
-              max="255"
+              :max="isServo ? 180 : 255"
             />
             <label v-else class="field-inline"><input v-model="form.safeValue" type="checkbox" /> On</label>
           </div>

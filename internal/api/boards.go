@@ -26,6 +26,7 @@ type capabilitiesOut struct {
 	DigitalPins []int `json:"digitalPins"`
 	AnalogPins  []int `json:"analogPins"`
 	PWMPins     []int `json:"pwmPins"`
+	ServoPins   []int `json:"servoPins"`
 }
 
 // firmwareOut is present only while a board is connected: the firmware
@@ -55,6 +56,9 @@ func splitCapabilities(caps []board.PinCapability) capabilitiesOut {
 		}
 		if pc.SupportsMode(board.ModePWM) {
 			out.PWMPins = append(out.PWMPins, pc.Pin)
+		}
+		if pc.SupportsMode(board.ModeServo) {
+			out.ServoPins = append(out.ServoPins, pc.Pin)
 		}
 		out.DigitalPins = append(out.DigitalPins, pc.Pin)
 	}

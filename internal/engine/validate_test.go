@@ -13,7 +13,43 @@ func testDevices() map[string]model.Device {
 		model.Device{ID: "sw", Role: model.RoleDigitalIn},
 		model.Device{ID: "led", Role: model.RoleDigitalOut},
 		model.Device{ID: "motor", Role: model.RolePWMOut},
+		model.Device{ID: "arm", Role: model.RoleServo},
 	)
+}
+
+// TestValidate_DeviceWrite_Servo confirms device-write accepts a servo
+// device (float64 input port, per docs/08-node-catalog.md), same as
+// pwm-out.
+func TestValidate_DeviceWrite_Servo(t *testing.T) {
+	t.Parallel()
+	p := model.Pipeline{ID: "p", Nodes: []model.Node{
+		node(t, "n1", "constant", map[string]any{"kind": "float", "value": 90}),
+		node(t, "n2", "device-write", map[string]any{"deviceId": "arm"}),
+	}, Edges: []model.Edge{
+		{From: "n1.out", To: "n2.in"},
+	}}
+	if _, _, err := Validate(p, testDevices()); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+// TestValidate_DeviceRead_Servo_Rejected confirms wiring device-read to a
+// servo device (write-only, no readable role per docs/09-data-model.md)
+// fails validation with a message naming the problem, not just "type
+// mismatch".
+func TestValidate_DeviceRead_Servo_Rejected(t *testing.T) {
+	t.Parallel()
+	p := model.Pipeline{ID: "p", Nodes: []model.Node{
+		node(t, "n1", "device-read", map[string]any{"deviceId": "arm"}),
+	}}
+	_, _, err := Validate(p, testDevices())
+	if err == nil {
+		t.Fatal("expected validation error: servo is not readable")
+	}
+	errs := err.(ValidationErrors)
+	if len(errs) != 1 || !strings.Contains(errs[0].Msg, "servo") {
+		t.Fatalf("unexpected errors: %+v, want a message naming the servo role", errs)
+	}
 }
 
 func TestValidate_UnknownNodeType(t *testing.T) {

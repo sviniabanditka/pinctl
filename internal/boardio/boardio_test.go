@@ -22,11 +22,17 @@ type fakeSession struct {
 	analogWrErr  error
 	digitalRdErr error
 	analogRdErr  error
+	servoCfgErr  error
+	servoWrErr   error
 
-	lastMode board.PinMode
-	lastPin  int
-	lastPWM  byte
-	lastHigh bool
+	lastMode        board.PinMode
+	lastPin         int
+	lastPWM         byte
+	lastHigh        bool
+	lastServoAngle  int
+	lastServoMinUs  int
+	lastServoMaxUs  int
+	servoConfigured bool
 }
 
 func newFakeSession() *fakeSession {
@@ -34,6 +40,7 @@ func newFakeSession() *fakeSession {
 		caps: []board.PinCapability{
 			{Pin: 13, Modes: map[board.PinMode]int{board.ModeOutput: 1, board.ModeInput: 1, board.ModePWM: 8}},
 			{Pin: 14, Modes: map[board.PinMode]int{board.ModeInput: 1, board.ModePullup: 1, board.ModeAnalog: 10}, AnalogChannel: 0, HasAnalogChannel: true},
+			{Pin: 2, Modes: map[board.PinMode]int{board.ModeInput: 1, board.ModeOutput: 1, board.ModeServo: 14}},
 		},
 		digital: map[int]bool{},
 		analog:  map[int]int{0: 512},
@@ -81,6 +88,20 @@ func (f *fakeSession) AnalogRead(channel int) (int, error) {
 		return 0, board.ErrNoCachedValue
 	}
 	return v, nil
+}
+
+func (f *fakeSession) ServoConfig(pin, minPulseUs, maxPulseUs int) error {
+	f.lastPin, f.lastServoMinUs, f.lastServoMaxUs = pin, minPulseUs, maxPulseUs
+	if f.servoCfgErr != nil {
+		return f.servoCfgErr
+	}
+	f.servoConfigured = true
+	return nil
+}
+
+func (f *fakeSession) ServoWrite(pin, angle int) error {
+	f.lastPin, f.lastServoAngle = pin, angle
+	return f.servoWrErr
 }
 
 func TestReadDevice_AnalogIn(t *testing.T) {
@@ -174,6 +195,38 @@ func TestWriteDevice_PWMOut_Clamps(t *testing.T) {
 	}
 }
 
+func TestWriteDevice_Servo_Clamps(t *testing.T) {
+	sess := newFakeSession()
+	io := New(sess)
+
+	tests := []struct {
+		in   float64
+		want int
+	}{
+		{-5, 0},
+		{200, 180},
+		{90.6, 91},
+		{90.4, 90},
+	}
+	for _, tc := range tests {
+		if err := io.WriteDevice(model.Device{ID: "servo", Pin: 2, Role: model.RoleServo}, engine.FloatValue(tc.in)); err != nil {
+			t.Fatalf("WriteDevice(%v): %v", tc.in, err)
+		}
+		if sess.lastServoAngle != tc.want {
+			t.Errorf("WriteDevice(%v): lastServoAngle = %d, want %d", tc.in, sess.lastServoAngle, tc.want)
+		}
+	}
+}
+
+func TestReadDevice_Servo_NotReadable(t *testing.T) {
+	sess := newFakeSession()
+	io := New(sess)
+
+	if _, err := io.ReadDevice(model.Device{ID: "servo", Pin: 2, Role: model.RoleServo}); err == nil {
+		t.Fatal("expected error: servo is write-only")
+	}
+}
+
 func TestWriteDevice_UnwritableRole(t *testing.T) {
 	sess := newFakeSession()
 	io := New(sess)
@@ -227,6 +280,38 @@ func TestApplyPinModes_CollectsErrorsButContinues(t *testing.T) {
 	}
 	if !errors.Is(err, board.ErrUnsupportedMode) {
 		t.Errorf("err = %v, want wrapping ErrUnsupportedMode", err)
+	}
+}
+
+func TestApplyPinModes_Servo_SetsModeAndConfig(t *testing.T) {
+	sess := newFakeSession()
+	devices := []model.Device{
+		{ID: "servo", Pin: 2, Role: model.RoleServo, Options: model.DeviceOptions{MinPulseUs: 600, MaxPulseUs: 2200}},
+	}
+
+	if err := ApplyPinModes(sess, devices); err != nil {
+		t.Fatalf("ApplyPinModes: %v", err)
+	}
+	if sess.lastMode != board.ModeServo || sess.lastPin != 2 {
+		t.Errorf("SetPinMode call = pin %d mode %v, want pin 2 mode Servo", sess.lastPin, sess.lastMode)
+	}
+	if !sess.servoConfigured {
+		t.Fatal("expected ServoConfig to be called")
+	}
+	if sess.lastServoMinUs != 600 || sess.lastServoMaxUs != 2200 {
+		t.Errorf("ServoConfig(min=%d, max=%d), want (600, 2200)", sess.lastServoMinUs, sess.lastServoMaxUs)
+	}
+}
+
+func TestApplyPinModes_Servo_DefaultsPulseRange(t *testing.T) {
+	sess := newFakeSession()
+	devices := []model.Device{{ID: "servo", Pin: 2, Role: model.RoleServo}}
+
+	if err := ApplyPinModes(sess, devices); err != nil {
+		t.Fatalf("ApplyPinModes: %v", err)
+	}
+	if sess.lastServoMinUs != 544 || sess.lastServoMaxUs != 2400 {
+		t.Errorf("ServoConfig(min=%d, max=%d), want defaults (544, 2400)", sess.lastServoMinUs, sess.lastServoMaxUs)
 	}
 }
 

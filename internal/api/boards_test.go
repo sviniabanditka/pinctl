@@ -37,6 +37,29 @@ func TestListBoards_FallbackSingleSession(t *testing.T) {
 	}
 }
 
+// TestListBoards_CapabilitiesIncludeServoPins confirms capabilities.servoPins
+// is populated from SupportsMode(board.ModeServo), alongside the existing
+// digitalPins/analogPins/pwmPins.
+func TestListBoards_CapabilitiesIncludeServoPins(t *testing.T) {
+	h, _ := newTestServer(t)
+
+	rec := doRequest(t, h, http.MethodGet, "/api/v1/boards", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Boards []boardOut `json:"boards"`
+	}
+	mustDecode(t, rec, &resp)
+	if len(resp.Boards) != 1 || resp.Boards[0].Capabilities == nil {
+		t.Fatalf("boards = %+v, want one connected board with capabilities", resp.Boards)
+	}
+	servoPins := resp.Boards[0].Capabilities.ServoPins
+	if len(servoPins) != 1 || servoPins[0] != 2 {
+		t.Errorf("servoPins = %v, want [2] (per the fakeSession fixture)", servoPins)
+	}
+}
+
 func TestRescanBoards_ReturnsAccepted(t *testing.T) {
 	h, _ := newTestServer(t)
 

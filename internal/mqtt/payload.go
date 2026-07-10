@@ -20,7 +20,7 @@ func encodeState(role model.DeviceRole, v engine.Value) []byte {
 			return []byte("ON")
 		}
 		return []byte("OFF")
-	default: // analog-in, pwm-out
+	default: // analog-in, pwm-out, servo
 		return []byte(strconv.FormatFloat(v.Float, 'f', 0, 64))
 	}
 }
@@ -50,6 +50,15 @@ func decodeCommand(role model.DeviceRole, payload []byte) (engine.Value, error) 
 			return engine.Value{}, fmt.Errorf("mqtt: pwm-out command %d out of range 0-255", n)
 		}
 		return engine.FloatValue(float64(n)), nil
+	case model.RoleServo:
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return engine.Value{}, fmt.Errorf("mqtt: servo command must be an integer 0-180, got %q", s)
+		}
+		if n < 0 || n > 180 {
+			return engine.Value{}, fmt.Errorf("mqtt: servo command %d out of range 0-180", n)
+		}
+		return engine.FloatValue(float64(n)), nil
 	default:
 		return engine.Value{}, fmt.Errorf("mqtt: role %q does not accept commands", role)
 	}
@@ -58,7 +67,7 @@ func decodeCommand(role model.DeviceRole, payload []byte) (engine.Value, error) 
 // zeroValue is a writable-role device's value before any command or
 // options.initial has been observed.
 func zeroValue(role model.DeviceRole) engine.Value {
-	if role == model.RolePWMOut {
+	if role == model.RolePWMOut || role == model.RoleServo {
 		return engine.FloatValue(0)
 	}
 	return engine.BoolValue(false)
@@ -85,7 +94,7 @@ func initialOutputValue(d model.Device) engine.Value {
 		if err := json.Unmarshal(*d.Options.Initial, &b); err == nil {
 			return engine.BoolValue(b)
 		}
-	case model.RolePWMOut:
+	case model.RolePWMOut, model.RoleServo:
 		var f float64
 		if err := json.Unmarshal(*d.Options.Initial, &f); err == nil {
 			return engine.FloatValue(f)

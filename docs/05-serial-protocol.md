@@ -14,6 +14,7 @@ the overall system, and how `Session` is consumed by the engine, is covered in
 
 - [Why Firmata (recap)](#why-firmata-recap)
 - [Firmata subset used](#firmata-subset-used)
+- [Servo](#servo)
 - [Transport](#transport)
 - [Session lifecycle](#session-lifecycle)
 - [Board identity](#board-identity)
@@ -46,8 +47,9 @@ lower reported major version as an unsupported board (see
 [Error handling](#error-handling)).
 
 Firmata defines far more message types than pinctl needs (e.g. I2C, one-wire,
-servo, string data, scheduler sysex — mostly v2 device roles, out of scope per
-the brief's domain model). The subset `internal/board` implements:
+string data, scheduler sysex — mostly v2 device roles, out of scope per the
+brief's domain model; servo, once similarly out of scope, is now implemented
+— see [Servo](#servo)). The subset `internal/board` implements:
 
 | Message | Direction | Wire form | Purpose |
 |---|---|---|---|
@@ -62,12 +64,65 @@ the brief's domain model). The subset `internal/board` implements:
 | Analog I/O Message | agent → runtime | `0xE0+channel <lsb> <msb>` | Agent's unprompted analog value report for a channel |
 | Analog Reporting | runtime → agent | `0xC0+channel <0/1>` | Enable/disable unprompted analog reports for a channel |
 | PWM write | runtime → agent | Analog I/O Message form (`0xE0+channel`) is *not* used for PWM; PWM uses `0xF5`-style Extended Analog (`0xF0 0x6F <pin> <value...> 0xF7`) for pins/values beyond the 7-bit basic write | Set duty cycle on a PWM-capable pin |
+| Servo Config (sysex) | runtime → agent | `0xF0 0x70 <pin> <min lsb> <min msb> <max lsb> <max msb> 0xF7` | Sets a servo-attached pin's pulse-width range (microseconds); see [Servo](#servo) below |
 | Sampling Interval (sysex) | runtime → agent | `0xF0 0x7A <lsb> <msb> 0xF7` | Sets the interval (ms) between unprompted analog/digital reports |
 | Sysex start/end | framing | `0xF0 ... 0xF7` | Wraps all sysex message bodies above |
 
-Not used by pinctl in MVP: I2C request/reply, OneWire, Servo config, String
-data, Scheduler sysex, Encoder — none map to a v0.x device role
-(`digital-in`/`digital-out`/`analog-in`/`pwm-out`).
+Not used by pinctl in MVP: I2C request/reply, OneWire, String data,
+Scheduler sysex, Encoder — none map to a v0.x device role
+(`digital-in`/`digital-out`/`analog-in`/`pwm-out`/`servo`).
+
+## Servo
+
+The `servo` device role (docs/09-data-model.md) drives a hobby servo
+attached to a pin via three Firmata pieces, all already covered in the
+subset table above:
+
+- **Attaching the servo — Set Pin Mode `0xF4 <pin> <mode=0x04>`
+  (`ModeServo`).** Per Firmata, this is what makes the board attach a
+  `Servo` object to the pin — StandardFirmata's Servo library generates the
+  ~50 Hz pulse train in software, which is *why* servo capability is
+  reported on a much wider pin set than PWM (see below): it doesn't depend
+  on the AVR's hardware PWM timers at all.
+- **`0xF0 0x70 <pin> <min lsb> <min msb> <max lsb> <max msb> 0xF7` (SERVO_CONFIG).**
+  Sets the pin's pulse-width range in microseconds (each value 7-bit-chunk
+  encoded per [`encode7Bit`](#why-firmata-recap), same as every other
+  multi-byte Firmata value), defaulting to `544`/`2400` — a standard hobby
+  servo's datasheet range — when a device's `minPulseUs`/`maxPulseUs`
+  options are unset. Per Firmata, SERVO_CONFIG may be sent before or after
+  the Set Pin Mode that attaches the servo; `internal/board`'s
+  `ApplyPinModes` always sends it right after, so a pin's range is
+  configured before the first angle write reaches it either way.
+- **Angle writes reuse Extended Analog, `0xF0 0x6F <pin> <angle...> 0xF7`
+  — the same wire form `EncodeAnalogWrite`/`Session.AnalogWrite` already use
+  for PWM.** Firmata has no separate "servo angle write" message; once a
+  pin is in `ModeServo`, the board interprets an Extended Analog write on
+  it as a target angle (0–180 degrees) instead of a PWM duty cycle.
+  `Session.ServoWrite` is a distinct method from `AnalogWrite` only for its
+  own 0–180 validation (and the servo-capability check), not because the
+  bytes on the wire differ.
+
+**Capability breadth on a real Uno:** a stock Uno running
+`StandardFirmata.ino 2.5` reports servo capability on pins **2–19**
+(`D2`–`D13`, `A0`–`A5`), while PWM (hardware timer-backed) is reported only
+on **3, 5, 6, 9, 10, 11**. This is the concrete instance of the point
+above — software-generated servo pulses aren't tied to the ATmega328P's
+three PWM-capable timers the way `analogWrite`'s hardware PWM is, so
+Firmata's Servo library can offer it on any digital pin. `internal/api`'s
+device-create validation (see [10-api.md](10-api.md)) checks a `servo`
+device's pin against the board's actually-reported capability list, not a
+hardcoded PWM-shaped pin set.
+
+**Reboot:** like every other output role, a `servo` device's pin mode is
+lost on a mid-session board reset (see
+[Mid-session board reset](#mid-session-board-reset)) — the reattached Servo
+object and its configured pulse-width range don't survive a reboot any more
+than an `OUTPUT` pin's last-written value does. `ApplyPinModes` re-running
+from `Session.SetOnReboot`'s callback re-sends both the Set Pin Mode
+(`ModeServo`) and the Servo Config sysex for every `servo` device, exactly
+as it does on the initial connect — so a rebooted board re-attaches the
+servo with the right pulse-width range instead of coming back with
+Firmata's own default range (or not attached at all).
 
 ## Transport
 

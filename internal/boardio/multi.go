@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/sviniabanditka/pinctl/internal/board"
 	"github.com/sviniabanditka/pinctl/internal/engine"
@@ -104,6 +105,20 @@ func applySafeValue(sess Session, d model.Device) error {
 			f = 255
 		}
 		if err := sess.AnalogWrite(d.Pin, byte(f)); err != nil {
+			return fmt.Errorf("boardio: device %s (pin %d): applying safe value: %w", d.ID, d.Pin, err)
+		}
+	case model.RoleServo:
+		f, err := decodeFloatOption(d.Options.SafeValue)
+		if err != nil {
+			return fmt.Errorf("boardio: device %s: safeValue: %w", d.ID, err)
+		}
+		if f < 0 {
+			f = 0
+		}
+		if f > 180 {
+			f = 180
+		}
+		if err := sess.ServoWrite(d.Pin, int(math.Round(f))); err != nil {
 			return fmt.Errorf("boardio: device %s (pin %d): applying safe value: %w", d.ID, d.Pin, err)
 		}
 	default:

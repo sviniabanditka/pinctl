@@ -16,7 +16,7 @@ func haComponent(role model.DeviceRole) (component string, ok bool) {
 		return "binary_sensor", true
 	case model.RoleDigitalOut:
 		return "switch", true
-	case model.RolePWMOut:
+	case model.RolePWMOut, model.RoleServo:
 		return "number", true
 	default:
 		return "", false
@@ -43,17 +43,19 @@ type haDevice struct {
 // encoding/json doesn't preserve struct field order in a meaningful way to
 // HA, which parses it as a map, so this is for human readability only).
 type haConfig struct {
-	Name             string           `json:"name"`
-	UniqueID         string           `json:"unique_id"`
-	StateTopic       string           `json:"state_topic"`
-	CommandTopic     string           `json:"command_topic,omitempty"`
-	AvailabilityMode string           `json:"availability_mode"`
-	Availability     []haAvailability `json:"availability"`
-	StateClass       string           `json:"state_class,omitempty"`
-	Min              *int             `json:"min,omitempty"`
-	Max              *int             `json:"max,omitempty"`
-	Mode             string           `json:"mode,omitempty"`
-	Device           haDevice         `json:"device"`
+	Name              string           `json:"name"`
+	UniqueID          string           `json:"unique_id"`
+	StateTopic        string           `json:"state_topic"`
+	CommandTopic      string           `json:"command_topic,omitempty"`
+	AvailabilityMode  string           `json:"availability_mode"`
+	Availability      []haAvailability `json:"availability"`
+	StateClass        string           `json:"state_class,omitempty"`
+	Min               *int             `json:"min,omitempty"`
+	Max               *int             `json:"max,omitempty"`
+	Step              *int             `json:"step,omitempty"`
+	UnitOfMeasurement string           `json:"unit_of_measurement,omitempty"`
+	Mode              string           `json:"mode,omitempty"`
+	Device            haDevice         `json:"device"`
 }
 
 // buildDiscoveryConfig renders d's discovery config payload. board is d's
@@ -91,6 +93,12 @@ func buildDiscoveryConfig(cfg discoveryInput) ([]byte, error) {
 	}
 	if component == "number" {
 		min, max := 0, 255
+		if cfg.Device.Role == model.RoleServo {
+			max = 180
+			step := 1
+			c.Step = &step
+			c.UnitOfMeasurement = "°"
+		}
 		c.Min, c.Max = &min, &max
 		c.Mode = "slider"
 	}

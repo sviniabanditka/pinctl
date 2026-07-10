@@ -186,7 +186,7 @@ core domain model in [00-design-brief.md](./00-design-brief.md)).
 | `name` | string | yes | User-editable display name, e.g. `"LDR on A0"`. |
 | `boardId` | string | yes | Must reference an existing entry in `boards.json` (see [Validation rules](#validation-rules)). |
 | `pin` | integer | yes | Firmata pin number for every role, in the single numbering the board's capability table exposes (on an Uno: D0–D13 = 0–13, A0–A5 = 14–19). For `analog-in` the runtime resolves the pin's analog channel from the capability/analog-mapping tables itself (see [05-serial-protocol.md](./05-serial-protocol.md)) — the user never enters a channel index, avoiding the "pin 0 vs channel 0 (A0)" ambiguity. |
-| `role` | string | yes | One of `digital-in`, `digital-out`, `analog-in`, `pwm-out` (v2: `servo`, `i2c`, per the brief). Immutable after creation — changing a device's role out from under pipelines that reference it is a delete-and-recreate, not an edit, so referencing pipelines fail validation predictably instead of silently changing type. |
+| `role` | string | yes | One of `digital-in`, `digital-out`, `analog-in`, `pwm-out`, `servo` (v2: `i2c`, per the brief). Immutable after creation — changing a device's role out from under pipelines that reference it is a delete-and-recreate, not an edit, so referencing pipelines fail validation predictably instead of silently changing type. |
 | `options` | object | no | Per-role config, see table below. Defaults apply for any omitted field. |
 | `createdAt` / `updatedAt` | string (RFC 3339) | yes | Same semantics as on `Board`. |
 
@@ -202,6 +202,21 @@ core domain model in [00-design-brief.md](./00-design-brief.md)).
 | `pwm-out` | `initial` | integer `0–255` | `0` | Same semantics as `digital-out.initial`. |
 | `pwm-out` | `onDisconnect` | `"hold"` \| `"safe-value"` | `"safe-value"` | Same semantics as `digital-out.onDisconnect`. |
 | `pwm-out` | `safeValue` | integer `0–255` | `0` | Used only when `onDisconnect: "safe-value"`. |
+| `servo` | `minPulseUs` | integer | `544` | SERVO_CONFIG's minimum pulse width, microseconds (see [05-serial-protocol.md](./05-serial-protocol.md#servo)). |
+| `servo` | `maxPulseUs` | integer | `2400` | SERVO_CONFIG's maximum pulse width, microseconds. |
+| `servo` | `initial` | number `0–180` | `0` | Same semantics as `digital-out.initial`; angle in degrees. |
+| `servo` | `onDisconnect` | `"hold"` \| `"safe-value"` | `"safe-value"` | Same semantics as `digital-out.onDisconnect`. |
+| `servo` | `safeValue` | number `0–180` | `0` | Used only when `onDisconnect: "safe-value"`; angle in degrees. |
+
+`servo` is **write-only** (no `device-read` support, exactly like
+`pwm-out` — see [08-node-catalog.md](./08-node-catalog.md)): its value is a
+target angle in degrees, range **0–180**, clamped rather than rejected at
+the point of write (manual REST write and `device-write`'s pipeline input
+alike). `pin` for a `servo` device must be one the board's Capability Query
+response reports servo support for — on a stock Uno running
+StandardFirmata, that's pins 2–19, a wider set than the `pwm-out`-relevant
+PWM pins (3/5/6/9/10/11), since servo pulses are generated in software; see
+[05-serial-protocol.md](./05-serial-protocol.md#servo).
 
 `devices.json` (annotated example):
 
@@ -367,7 +382,7 @@ references staying consistent:
 | `edge.from` / `edge.to` reference an existing `node.id` and one of that node's declared ports | pipeline save | `400` with field-level error, see [10-api.md](./10-api.md) |
 | No duplicate edge between the same `(from, to)` pair | pipeline save | `400` |
 | `device-read`/`device-write` node's `config.deviceId` references an existing device | pipeline save | `400` |
-| Referenced device's `role` is compatible with the node type (`device-read` needs `digital-in`/`analog-in`; `device-write` needs `digital-out`/`pwm-out`) | pipeline save, and re-checked at `Engine.Reload`/`Load` time (a device's role cannot change post-creation, but the *reference* can go stale if the device was deleted and a same-named one recreated — see next rule) | `400` at save; pipeline kept in previous-good state with an `error` status at reload time, per [06-runtime.md](./06-runtime.md#error-philosophy) |
+| Referenced device's `role` is compatible with the node type (`device-read` needs `digital-in`/`analog-in`; `device-write` needs `digital-out`/`pwm-out`/`servo`) | pipeline save, and re-checked at `Engine.Reload`/`Load` time (a device's role cannot change post-creation, but the *reference* can go stale if the device was deleted and a same-named one recreated — see next rule) | `400` at save; pipeline kept in previous-good state with an `error` status at reload time, per [06-runtime.md](./06-runtime.md#error-philosophy) |
 | A device cannot be deleted while any pipeline references its `id` | device delete | `409 Conflict`, see [10-api.md](./10-api.md) |
 | A board is **not** protected the same way: deleting a board does not cascade-delete its devices. Devices left pointing at a missing `boardId` are not fatal — they simply resolve to "board offline" (same code path as a board being unplugged) and any pipeline reading/writing them is paused, not deleted | board delete, device/pipeline load | none (warning surfaced in the UI) |
 | No cycles in `edges` (topological sort must succeed) | pipeline save | `400`, see [07-pipeline-engine.md](./07-pipeline-engine.md) |

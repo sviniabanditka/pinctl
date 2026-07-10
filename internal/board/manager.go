@@ -688,3 +688,19 @@ func (a *AnyConnectedSession) AnalogRead(channel int) (int, error) {
 	}
 	return sess.AnalogRead(channel)
 }
+
+func (a *AnyConnectedSession) ServoConfig(pin, minPulseUs, maxPulseUs int) error {
+	sess, ok := a.resolve()
+	if !ok {
+		return ErrBoardOffline
+	}
+	return sess.ServoConfig(pin, minPulseUs, maxPulseUs)
+}
+
+func (a *AnyConnectedSession) ServoWrite(pin, angle int) error {
+	sess, ok := a.resolve()
+	if !ok {
+		return ErrBoardOffline
+	}
+	return sess.ServoWrite(pin, angle)
+}

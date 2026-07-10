@@ -362,7 +362,7 @@ func (b *Bridge) onCommand(topic string, payload []byte) {
 		return
 	}
 
-	if d.Role != model.RoleDigitalOut && d.Role != model.RolePWMOut {
+	if !isWritableRole(d.Role) {
 		b.logRateLimited(deviceID, "mqtt: command for %s (role %s) rejected: not a writable device", deviceID, d.Role)
 		return
 	}
@@ -499,7 +499,7 @@ func (b *Bridge) currentDevices() []model.Device {
 }
 
 func isWritableRole(role model.DeviceRole) bool {
-	return role == model.RoleDigitalOut || role == model.RolePWMOut
+	return role == model.RoleDigitalOut || role == model.RolePWMOut || role == model.RoleServo
 }
 
 func devicesEqualForDiscovery(a, b model.Device) bool {

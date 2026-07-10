@@ -17,7 +17,9 @@ const toasts = reactive<Toast[]>([])
 const AUTO_DISMISS_MS = 5000
 
 function severityFor(code: string): ToastSeverity {
-  if (code === 'validation_error' || code === 'conflict' || code === 'device_in_use') return 'warning'
+  if (code === 'validation_error' || code === 'conflict' || code === 'device_in_use' || code === 'unsupported_pin_mode') {
+    return 'warning'
+  }
   if (code === 'not_found') return 'info'
   return 'error'
 }

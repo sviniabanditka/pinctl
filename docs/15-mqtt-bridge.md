@@ -71,6 +71,7 @@ directly, and a human running `mosquitto_sub` sees a number, not a wrapper.
 | `digital-in` | `ON` / `OFF` | — |
 | `digital-out` | `ON` / `OFF` | `ON` / `OFF` |
 | `pwm-out` | `0`–`255` (duty cycle) | `0`–`255` |
+| `servo` | `0`–`180` (angle, degrees) | `0`–`180` |
 
 Anything else on a `set` topic is rejected and logged once per device per
 minute — a misconfigured automation should not fill the journal.
@@ -87,6 +88,7 @@ which is how HA removes an entity).
 | `digital-in` | `binary_sensor` | |
 | `digital-out` | `switch` | |
 | `pwm-out` | `number` | `min: 0`, `max: 255`, `mode: slider` |
+| `servo` | `number` | `min: 0`, `max: 180`, `step: 1`, `mode: slider`, `unit_of_measurement: "°"` |
 
 Every entity carries `availability` (both the global `pinctl/status` and its
 own `pinctl/<device>/available`, with `availability_mode: all`), a
@@ -200,7 +202,7 @@ isn't Home Assistant.
 
 Firmata never reports an output pin's value back, so a poll loop alone can
 only ever see `digital-in`/`analog-in`. Output state (`digital-out`,
-`pwm-out`) becomes observable the other way around: every writer — the
+`pwm-out`, `servo`) becomes observable the other way around: every writer — the
 pipeline engine, the REST manual write, and this bridge's own command
 handler — writes through one `engine.DeviceIO` wrapped with
 `devicebus.WrapWriter`. On a successful write, the wrapper calls

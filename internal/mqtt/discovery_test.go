@@ -17,6 +17,7 @@ func TestHAComponent(t *testing.T) {
 		{model.RoleDigitalIn, "binary_sensor"},
 		{model.RoleDigitalOut, "switch"},
 		{model.RolePWMOut, "number"},
+		{model.RoleServo, "number"},
 	}
 	for _, tt := range tests {
 		got, ok := haComponent(tt.role)
@@ -106,6 +107,48 @@ func TestBuildDiscoveryConfig_NumberHasMinMaxMode(t *testing.T) {
 	}
 	if got["command_topic"] != "pinctl/dev_pwm/set" {
 		t.Errorf("command_topic = %v", got["command_topic"])
+	}
+}
+
+func TestBuildDiscoveryConfig_ServoHasMinMaxStepUnit(t *testing.T) {
+	d := model.Device{ID: "dev_servo", Name: "Pan servo", BoardID: "brd_1", Role: model.RoleServo}
+	payload, err := buildDiscoveryConfig(discoveryInput{Device: d, BaseTopic: "pinctl"})
+	if err != nil {
+		t.Fatalf("buildDiscoveryConfig: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["min"] != float64(0) || got["max"] != float64(180) {
+		t.Errorf("min/max = %v/%v, want 0/180", got["min"], got["max"])
+	}
+	if got["step"] != float64(1) {
+		t.Errorf("step = %v, want 1", got["step"])
+	}
+	if got["unit_of_measurement"] != "°" {
+		t.Errorf("unit_of_measurement = %v, want °", got["unit_of_measurement"])
+	}
+	if got["mode"] != "slider" {
+		t.Errorf("mode = %v, want slider", got["mode"])
+	}
+	if got["command_topic"] != "pinctl/dev_servo/set" {
+		t.Errorf("command_topic = %v", got["command_topic"])
+	}
+}
+
+func TestBuildDiscoveryConfig_PWMHasNoUnit(t *testing.T) {
+	d := model.Device{ID: "dev_pwm2", Name: "LED", BoardID: "brd_1", Role: model.RolePWMOut}
+	payload, err := buildDiscoveryConfig(discoveryInput{Device: d, BaseTopic: "pinctl"})
+	if err != nil {
+		t.Fatalf("buildDiscoveryConfig: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, has := got["unit_of_measurement"]; has {
+		t.Errorf("pwm-out should not have a unit_of_measurement, got %v", got["unit_of_measurement"])
 	}
 }
 

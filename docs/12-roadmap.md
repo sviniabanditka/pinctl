@@ -187,15 +187,30 @@ fixed, total, non-Turing-complete grammar over declared inputs only (no
 loops, function calls, state, or I/O), so it doesn't reopen the "scripting
 language inside nodes" non-goal the brief excludes.
 
-**Servo / I2C device roles.** What: extend the device role enum beyond
-`digital-in/out`, `analog-in`, `pwm-out` to `servo` (angle-based PWM) and
-`i2c` (addressable sensor/actuator buses). Why deferred: StandardFirmata
-supports both, but the MVP node catalog and value model (`bool`/`float64` on
-edges) were designed against the four simple roles first; I2C in particular
-needs a per-device-type config schema (address, register map) the current
-data model doesn't have room for yet. Trigger: MVP is stable and someone
-wants to drive a servo or an I2C sensor (e.g. a BMP280) without hand-editing
-Firmata calls outside pinctl.
+**Servo device role — shipped.** A `servo` role (write-only, `float64`,
+0–180 degrees) alongside `digital-in/out`, `analog-in`, `pwm-out`, backed by
+StandardFirmata's `SERVO_CONFIG`/analog-write pulse control
+(`minPulseUs`/`maxPulseUs` device options, default `544`/`2400`). It slots
+into the existing output machinery unchanged — the web UI's PWM slider
+shape, the MQTT bridge's `number` discovery component, the pipeline
+engine's `device-write` node, and the pin-mode check on `POST /devices`
+(`400 unsupported_pin_mode` when a connected board's pin can't do the
+requested role) all treat it as a fourth output role rather than a special
+case. See [11-web-ui.md](./11-web-ui.md) and
+[15-mqtt-bridge.md](./15-mqtt-bridge.md).
+
+**I2C device role — deferred.** What: an `i2c` role for addressable
+sensor/actuator buses (e.g. a BMP280 over I2C). Why still deferred, unlike
+servo: StandardFirmata gives the transport (`I2C_REQUEST`/`I2C_REPLY`), but
+the transport isn't the hard part — a bus address alone means nothing
+without a driver that knows a specific chip's register map, so "add an i2c
+role" is really "add a per-chip driver framework," which servo never
+needed (a servo is just a pulse width, already `float64`-shaped). That's a
+project inside the project — data model support for a register-map config
+schema, a driver registry, and per-chip implementations — not a
+`DeviceRole` enum entry. Trigger: someone wants a specific I2C sensor badly
+enough to write (or fund) that driver, at which point the scope should
+start from that one chip, not from a general "I2C support" epic.
 
 **MQTT / Home Assistant bridge — shipped.** `internal/mqtt` publishes device
 values, accepts commands for output devices, and announces itself via Home
