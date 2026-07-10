@@ -621,9 +621,10 @@ function onWindowKeydown(ev: KeyboardEvent) {
             @keydown.enter="openPipeline(p.id)"
           >
             <td data-label="Name">
-              <span class="pipeline-name">{{ p.name }}</span>
+              <span class="pipeline-name" :title="p.detail || undefined">{{ p.name }}</span>
+              <div v-if="p.detail" class="pipeline-detail mono ink-dim">{{ p.detail }}</div>
             </td>
-            <td data-label="Status"><StatusBadge :status="p.status" /></td>
+            <td data-label="Status" :title="p.detail || undefined"><StatusBadge :status="p.status" /></td>
             <td data-label="Enabled" @click.stop>
               <button
                 type="button"
@@ -631,6 +632,7 @@ function onWindowKeydown(ev: KeyboardEvent) {
                 role="switch"
                 :aria-checked="p.enabled"
                 :aria-label="`${p.enabled ? 'Disable' : 'Enable'} ${p.name}`"
+                :title="p.status === 'paused' ? 'Enabled — waiting for the board' : undefined"
                 :disabled="togglingPipelineId === p.id"
                 @click="togglePipelineEnabled(p)"
               >
@@ -787,6 +789,19 @@ function onWindowKeydown(ev: KeyboardEvent) {
 .pipeline-name {
   color: var(--ink);
   font-weight: 500;
+}
+
+/* Paused-pipeline reason (docs/07-pipeline-engine.md "Degraded ticks") —
+   e.g. "device dev_9zq3v7ab4c is unreachable (board brd_4kx8n2wq1r)" —
+   surfaced beneath the name rather than as its own column: it's rare
+   (only while paused/error) and reads naturally as a sub-line. */
+.pipeline-detail {
+  font-size: 0.6875rem;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 32ch;
 }
 
 .sparkline-btn {

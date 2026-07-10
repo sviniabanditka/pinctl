@@ -47,6 +47,17 @@ func deviceRoleForWrite(role model.DeviceRole) (PortType, bool) {
 	}
 }
 
+// DeviceReadPortType is deviceRoleForRead, exported for internal/simulate
+// (docs/18-simulation.md): its simulated DeviceIO has to hand
+// deviceReadNode.Eval back a Value of exactly the Type device-read expects
+// for a device's role (bool for digital-in, float64 for analog-in) —
+// deviceReadNode.Eval rejects a mismatched Type as an error. Without this,
+// simulate would have to re-derive that role->type mapping itself, a copy
+// that could silently drift from this one.
+func DeviceReadPortType(role model.DeviceRole) (PortType, bool) {
+	return deviceRoleForRead(role)
+}
+
 // ---- device-read ----
 
 type deviceReadConfig struct {

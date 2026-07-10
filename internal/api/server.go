@@ -174,6 +174,7 @@ func NewServer(sess Session, port string, st *store.Store, mgr *engine.Manager, 
 	mux.HandleFunc("GET /api/v1/pipelines", s.handleListPipelines)
 	mux.HandleFunc("POST /api/v1/pipelines", s.handleCreatePipeline)
 	mux.HandleFunc("POST /api/v1/pipelines/validate", s.handleValidatePipeline)
+	mux.HandleFunc("POST /api/v1/simulate", s.handleSimulate)
 	mux.HandleFunc("GET /api/v1/pipelines/{id}", s.handleGetPipeline)
 	mux.HandleFunc("PUT /api/v1/pipelines/{id}", s.handleUpdatePipeline)
 	mux.HandleFunc("DELETE /api/v1/pipelines/{id}", s.handleDeletePipeline)

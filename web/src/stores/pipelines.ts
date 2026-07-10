@@ -68,12 +68,21 @@ export const usePipelinesStore = defineStore('pipelines', {
       if (p) {
         p.enabled = res.enabled
         p.status = res.status
+        // enable/disable's response never carries `detail` (internal/api/
+        // pipelines.go's pipelineActionResponse has no such field) — clear
+        // it here and let the next "pipelines" WS broadcast (published
+        // immediately after every enable/disable) fill in the real reason
+        // if the new status is "paused".
+        p.detail = ''
       }
     },
 
     applyStatus(data: PipelinesTopicData) {
       const p = this.pipelines.find((p) => p.id === data.pipelineId)
-      if (p) p.status = data.status
+      if (p) {
+        p.status = data.status
+        p.detail = data.detail ?? ''
+      }
     },
 
     subscribeLive(): () => void {

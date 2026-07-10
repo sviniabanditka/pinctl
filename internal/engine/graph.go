@@ -10,6 +10,19 @@ import (
 // docs/07-pipeline-engine.md "Default tick rate: 20 ms."
 const defaultTickMs = 20
 
+// EffectiveTickMs resolves p's effective tick period the same way Compile
+// does: p.TickMs when set, defaultTickMs otherwise. Exported for
+// internal/simulate (docs/18-simulation.md), which needs this value to pace
+// its fake clock/ticker in lockstep with the runner Manager.Start will
+// create, without either hardcoding the default separately (drift risk if
+// it ever changes) or running a throwaway Compile just to read it back.
+func EffectiveTickMs(p model.Pipeline) int {
+	if p.TickMs > 0 {
+		return p.TickMs
+	}
+	return defaultTickMs
+}
+
 // nodeInstance is one compiled node: its live Node implementation plus the
 // static wiring the runner needs to assemble its inputs each tick.
 type nodeInstance struct {

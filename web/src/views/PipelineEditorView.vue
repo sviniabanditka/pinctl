@@ -38,7 +38,6 @@ const { screenToFlowCoordinate, vueFlowRef, viewport, onConnect } = useVueFlow()
 
 const selectedNodeId = ref<string | null>(null)
 const toggleBusy = ref(false)
-const pipelineStatus = ref<PipelinesTopicData | null>(null)
 const paletteOpen = ref(false)
 
 // -- log drawer: hidden by default, state persisted across sessions --------
@@ -205,7 +204,7 @@ onMounted(async () => {
   unsubPipelines = (() => {
     const handler = (data: unknown) => {
       const d = data as PipelinesTopicData
-      if (d.pipelineId === props.id) pipelineStatus.value = d
+      if (d.pipelineId === props.id) editor.applyStatus(d)
     }
     ws.subscribe('pipelines', handler)
     return () => ws.unsubscribe('pipelines', handler)
@@ -376,7 +375,7 @@ async function onToggleEnabled() {
   try {
     const action = editor.enabled ? 'disable' : 'enable'
     const res = await api.post<PipelineActionResponse>(`/pipelines/${props.id}/${action}`)
-    editor.setEnabled(res.enabled)
+    editor.setEnabled(res.enabled, res.status)
     pipelines.applyAction(res)
     subscribeLiveIfEnabled()
   } catch (err) {
@@ -401,8 +400,11 @@ const debugHintVisible = computed(() => !editor.enabled)
     <div class="editor-body">
       <div class="canvas-wrapper">
         <div v-if="debugHintVisible" class="debug-hint">Enable the pipeline to see live values.</div>
-        <div v-else-if="pipelineStatus && pipelineStatus.status !== 'running'" class="debug-hint warn">
-          {{ pipelineStatus.status }}<template v-if="pipelineStatus.detail"> — {{ pipelineStatus.detail }}</template>
+        <div v-else-if="editor.status === 'paused'" class="debug-hint warn">
+          Board unreachable — this pipeline resumes on its own when it returns.
+        </div>
+        <div v-else-if="editor.status === 'error'" class="debug-hint alert">
+          {{ editor.status }}<template v-if="editor.detail"> — {{ editor.detail }}</template>
         </div>
         <VueFlow
           v-model:nodes="editor.nodes"
@@ -607,6 +609,11 @@ const debugHintVisible = computed(() => !editor.enabled)
 .debug-hint.warn {
   color: var(--signal-warn);
   border-color: color-mix(in srgb, var(--signal-warn) 40%, transparent);
+}
+
+.debug-hint.alert {
+  color: var(--signal-alert);
+  border-color: color-mix(in srgb, var(--signal-alert) 40%, transparent);
 }
 
 /* @vue-flow/controls ships a light-theme panel (white buttons, light

@@ -45,7 +45,10 @@ export interface Edge {
 
 export type PipelineStatus = 'running' | 'paused' | 'error' | 'stopped'
 
-/** GET /pipelines list-view shape — no nodes/edges. */
+/** GET /pipelines list-view shape — no nodes/edges. `detail` is present
+ * (non-empty) only while status is `paused` or `error` — e.g. "device
+ * dev_9zq3v7ab4c is unreachable (board brd_4kx8n2wq1r)" (internal/api/
+ * pipelines.go's pipelineSummary). */
 export interface PipelineSummary {
   id: string
   name: string
@@ -53,9 +56,13 @@ export interface PipelineSummary {
   tickMs: number
   nodeCount: number
   status: PipelineStatus
+  detail?: string
 }
 
-/** GET/PUT /pipelines/{id} full-graph shape. */
+/** GET/PUT /pipelines/{id} full-graph shape. `status`/`detail` are only
+ * ever present on the GET response (internal/api/pipelines.go's
+ * pipelineDetailResponse) — PUT's pipelineSaveResponse doesn't carry them,
+ * hence optional here rather than a second near-identical type. */
 export interface Pipeline {
   id: string
   name: string
@@ -65,6 +72,8 @@ export interface Pipeline {
   edges: Edge[]
   createdAt: string
   updatedAt: string
+  status?: PipelineStatus
+  detail?: string
 }
 
 export interface PipelineWriteRequest {

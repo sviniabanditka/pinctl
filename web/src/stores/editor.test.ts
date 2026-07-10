@@ -199,4 +199,58 @@ describe('editor store', () => {
     expect(store.edges.map((e) => e.id)).toEqual(['e1'])
     expect(store.dirty).toBe(true)
   })
+
+  it('applyLoaded() seeds status/detail from the GET response, falling back to enabled when absent', () => {
+    const store = useEditorStore()
+    store.applyLoaded({ ...samplePipeline, enabled: true, status: 'paused', detail: 'device dev_1 is unreachable (board brd_1)' })
+    expect(store.status).toBe('paused')
+    expect(store.detail).toBe('device dev_1 is unreachable (board brd_1)')
+
+    // PUT's response shape (Pipeline & warnings) never carries status/detail.
+    store.applyLoaded({ ...samplePipeline, enabled: false })
+    expect(store.status).toBe('stopped')
+    expect(store.detail).toBe('')
+  })
+
+  it('applyStatus() updates status/detail for the current pipeline and ignores a stale one', () => {
+    const store = useEditorStore()
+    store.applyLoaded(samplePipeline)
+
+    store.applyStatus({ pipelineId: 'pl_1', status: 'paused', detail: 'device dev_1 is unreachable (board brd_1)' })
+    expect(store.status).toBe('paused')
+    expect(store.detail).toBe('device dev_1 is unreachable (board brd_1)')
+
+    // A status event for a different (previously open) pipeline must not
+    // clobber the one currently loaded.
+    store.applyStatus({ pipelineId: 'pl_2', status: 'error' })
+    expect(store.status).toBe('paused')
+  })
+
+  it('setEnabled() applies the action response status and clears detail (enable/disable never carries one)', () => {
+    const store = useEditorStore()
+    store.applyLoaded(samplePipeline)
+    store.detail = 'stale detail'
+
+    store.setEnabled(true, 'running')
+
+    expect(store.enabled).toBe(true)
+    expect(store.status).toBe('running')
+    expect(store.detail).toBe('')
+  })
+
+  it('applyTick() timestamps only the nodes present in that tick snapshot', () => {
+    const store = useEditorStore()
+    store.applyLoaded(samplePipeline)
+
+    store.applyTick({ pipelineId: 'pl_1', tick: 1, nodes: { a: 1, b: true } })
+
+    expect(Object.keys(store.liveNodeUpdatedAt).sort()).toEqual(['a', 'b'])
+
+    // A degraded tick that abandons evaluation before node "b" only
+    // refreshes "a" — "b"'s stamp must stay at its earlier value, not jump
+    // forward with the rest of the tick.
+    const staleStamp = store.liveNodeUpdatedAt.b
+    store.applyTick({ pipelineId: 'pl_1', tick: 2, nodes: { a: 2 } })
+    expect(store.liveNodeUpdatedAt.b).toBe(staleStamp)
+  })
 })

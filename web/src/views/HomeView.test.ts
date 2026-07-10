@@ -9,7 +9,8 @@ import { useBoardsStore } from '../stores/boards'
 import { usePipelinesStore } from '../stores/pipelines'
 import { useToasts } from '../composables/toast'
 import { ApiError } from '../api/client'
-import type { Device } from '../api/types'
+import StatusBadge from '../components/StatusBadge.vue'
+import type { Device, PipelineSummary } from '../api/types'
 
 function device(id: string, role: Device['role'], pin: number): Device {
   return {
@@ -130,5 +131,53 @@ describe('HomeView: unsupported_pin_mode surfaces as a toast', () => {
     expect(toast.severity).toBe('warning')
     expect(toast.message).toContain('servo')
     expect(toast.message).toContain('pin 4')
+  })
+})
+
+function pipeline(overrides: Partial<PipelineSummary> = {}): PipelineSummary {
+  return {
+    id: 'pl_1',
+    name: 'Sprinkler loop',
+    enabled: true,
+    tickMs: 20,
+    nodeCount: 4,
+    status: 'running',
+    ...overrides,
+  }
+}
+
+describe('HomeView: pipelines table paused status', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('renders the amber badge, exposes the detail, and keeps the enabled toggle on', async () => {
+    const { wrapper, pipelines } = await mountHome()
+    pipelines.pipelines = [
+      pipeline({ status: 'paused', detail: 'device dev_9zq3v7ab4c is unreachable (board brd_4kx8n2wq1r)' }),
+    ]
+    await wrapper.vm.$nextTick()
+
+    const badge = wrapper.findComponent(StatusBadge)
+    expect(badge.exists()).toBe(true)
+    expect(badge.props('status')).toBe('paused')
+    expect(badge.find('.dot.warn').exists()).toBe(true)
+
+    expect(wrapper.text()).toContain('device dev_9zq3v7ab4c is unreachable (board brd_4kx8n2wq1r)')
+
+    const toggle = wrapper.find('.toggle-switch')
+    expect(toggle.attributes('aria-checked')).toBe('true')
+  })
+
+  it('does not surface any detail line for a plain running pipeline', async () => {
+    const { wrapper, pipelines } = await mountHome()
+    pipelines.pipelines = [pipeline({ status: 'running' })]
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.pipeline-detail').exists()).toBe(false)
   })
 })

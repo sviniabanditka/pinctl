@@ -6,6 +6,7 @@ import { useDevicesStore } from '../../stores/devices'
 import { useEditorStore } from '../../stores/editor'
 import { NODE_SCHEMAS, nodeInputs, nodeOutputs, PORT_COLORS, resolvePortType } from '../../lib/nodeSchemas'
 import { portTypeContext } from '../../lib/clientValidation'
+import { isStaleTickValue } from '../../lib/staleness'
 import type { FlowNodeData } from '../../lib/graphMapping'
 
 const props = defineProps<NodeProps<FlowNodeData>>()
@@ -55,6 +56,20 @@ const liveActive = computed(() => editor.enabled && editor.liveTick !== null)
 const outputValue = computed(() => {
   if (!liveActive.value) return undefined
   return editor.liveNodeValues[props.id]
+})
+
+/** While the pipeline is paused (docs/07-pipeline-engine.md "Degraded
+ * ticks"), a degraded tick abandons evaluation at the unreachable read, so
+ * a node downstream of it simply stops gaining fresh entries in the tick
+ * snapshot rather than erroring — this node's last-shown value can go
+ * stale silently. Depending on `editor.liveTick` (rather than only
+ * `liveNodeUpdatedAt`) means this recomputes every tick even when *this*
+ * node's own entry didn't refresh, so the dimming kicks in the moment
+ * enough tick periods have passed, not only when some other value change
+ * happens to re-render the node. */
+const stale = computed(() => {
+  void editor.liveTick
+  return editor.status === 'paused' && isStaleTickValue(editor.liveNodeUpdatedAt[props.id], editor.tickMs)
 })
 
 /** True when the live value's rendered text is identical to the config
@@ -162,7 +177,12 @@ function valueClass(v: boolean | number | undefined): string {
         {{ isEmptySummary ? '—' : summary }}
       </div>
 
-      <div v-if="liveActive && outputs.length > 0 && outputValue !== undefined" class="node-live-value">
+      <div
+        v-if="liveActive && outputs.length > 0 && outputValue !== undefined"
+        class="node-live-value"
+        :class="{ 'node-live-value-stale': stale }"
+        :title="stale ? 'Board unreachable — this value stopped updating.' : undefined"
+      >
         <span class="mono num" :class="[valueClass(outputValue), { pulse: pulsing }]">{{ formatValue(outputValue) }}</span>
       </div>
     </div>
@@ -267,6 +287,14 @@ function valueClass(v: boolean | number | undefined): string {
 .node-live-value {
   margin-top: var(--space-1);
   display: flex;
+}
+
+/* Board unreachable (docs/07-pipeline-engine.md "Degraded ticks") — this
+   node's value stopped refreshing; dim it rather than let a frozen number
+   keep looking current. The toolbar carries the one-time "why" copy, so
+   this is deliberately just a visual cue, not another repeated string. */
+.node-live-value-stale .mono {
+  opacity: 0.4;
 }
 
 

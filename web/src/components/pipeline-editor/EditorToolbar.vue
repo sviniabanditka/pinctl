@@ -27,6 +27,18 @@ const saveTooltip = computed(() => {
 
 const enableDisabled = computed(() => editor.dirty)
 
+// A pipeline whose board is away keeps ticking and stays enabled
+// (docs/07-pipeline-engine.md "Degraded ticks") — the enable toggle alone
+// doesn't say that, so a user staring at a graph whose values have stopped
+// moving gets told plainly, right next to the toggle, rather than left to
+// guess whether the pipeline is broken.
+const statusNote = computed(() => {
+  if (editor.status === 'paused') return 'Board unreachable — this pipeline resumes on its own when it returns.'
+  if (editor.status === 'error') return editor.detail || 'Stopped after repeated node failures — needs a manual re-enable.'
+  return ''
+})
+const statusNoteClass = computed(() => (editor.status === 'error' ? 'alert' : 'warn'))
+
 /** Union of nodes flagged by a server validation error or part of a client-detected cycle. */
 const errorNodeIds = computed(() => {
   const ids = new Set<string>()
@@ -73,6 +85,10 @@ function selectFirstError() {
 
     <span class="spacer" />
 
+    <span v-if="statusNote" class="status-note mono" :class="statusNoteClass" :title="editor.detail || undefined">
+      {{ statusNote }}
+    </span>
+
     <span v-if="editor.dirty" class="dot dirty-dot" title="Unsaved changes" />
 
     <button
@@ -81,7 +97,7 @@ function selectFirstError() {
       :title="enableDisabled ? 'Save first' : ''"
       @click="emit('toggleEnabled')"
     >
-      <span class="dot" :class="{ running: editor.enabled }" />
+      <span class="dot" :class="{ running: editor.enabled && editor.status !== 'paused', warn: editor.status === 'paused' }" />
       {{ props.toggleBusy ? '…' : editor.enabled ? 'Disable' : 'Enable' }}
     </button>
 
@@ -142,6 +158,22 @@ function selectFirstError() {
   display: flex;
   align-items: center;
   gap: var(--space-1);
+}
+
+.status-note {
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 36ch;
+}
+
+.status-note.warn {
+  color: var(--signal-warn);
+}
+
+.status-note.alert {
+  color: var(--signal-alert);
 }
 
 .spacer {

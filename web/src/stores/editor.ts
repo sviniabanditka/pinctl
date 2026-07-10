@@ -6,7 +6,14 @@
 
 import { defineStore } from 'pinia'
 import { api } from '../api/client'
-import type { Pipeline, PipelineTickTopicData, PipelineWriteRequest, ValidationIssue } from '../api/types'
+import type {
+  Pipeline,
+  PipelinesTopicData,
+  PipelineStatus,
+  PipelineTickTopicData,
+  PipelineWriteRequest,
+  ValidationIssue,
+} from '../api/types'
 import {
   type FlowEdge,
   type FlowNode,
@@ -39,6 +46,14 @@ export const useEditorStore = defineStore('editor', {
     name: '',
     tickMs: 20,
     enabled: false,
+    /** Runtime status (docs/10-api.md), seeded from the GET response and
+     * kept live by the "pipelines" WS topic (see PipelineEditorView) — the
+     * one place the editor's chrome (EditorToolbar, the canvas debug hint,
+     * per-node staleness below) reads pipeline health from. */
+    status: 'stopped' as PipelineStatus,
+    /** Non-empty only while status is "paused" or "error" — e.g. "device
+     * dev_9zq3v7ab4c is unreachable (board brd_4kx8n2wq1r)". */
+    detail: '',
     nodes: [] as FlowNode[],
     edges: [] as FlowEdge[],
     createdAt: '',
@@ -54,6 +69,13 @@ export const useEditorStore = defineStore('editor', {
 
     liveTick: null as number | null,
     liveNodeValues: {} as Record<string, boolean | number>,
+    /** Wall-clock time (Date.now()) each node id last appeared in a tick
+     * snapshot — a degraded tick abandons evaluation partway through, so a
+     * node downstream of the unreachable read simply stops gaining a fresh
+     * entry here rather than erroring; lib/staleness.ts's isStaleTickValue
+     * turns "hasn't moved in a while" into the stale flag PipelineNode
+     * dims on. */
+    liveNodeUpdatedAt: {} as Record<string, number>,
     liveLog: [] as LiveLogEntry[],
 
     validateTimer: null as ReturnType<typeof setTimeout> | null,
@@ -95,6 +117,11 @@ export const useEditorStore = defineStore('editor', {
       this.name = p.name
       this.tickMs = p.tickMs
       this.enabled = p.enabled
+      // GET /pipelines/{id} carries status/detail; falls back to deriving
+      // from `enabled` for the (Pipeline & warnings) shape PUT returns,
+      // which doesn't.
+      this.status = p.status ?? (p.enabled ? 'running' : 'stopped')
+      this.detail = p.detail ?? ''
       this.nodes = p.nodes.map(modelNodeToFlowNode)
       this.edges = p.edges.map(modelEdgeToFlowEdge)
       this.createdAt = p.createdAt
@@ -105,6 +132,7 @@ export const useEditorStore = defineStore('editor', {
       this.serverWarnings = []
       this.liveTick = null
       this.liveNodeValues = {}
+      this.liveNodeUpdatedAt = {}
       this.liveLog = []
     },
 
@@ -245,14 +273,33 @@ export const useEditorStore = defineStore('editor', {
       this.serverErrors = mapValidationIssuesToNodes(errors, this.nodes.map((n) => n.id))
     },
 
-    setEnabled(enabled: boolean) {
+    /** `status` comes from PipelineActionResponse, which never carries
+     * `detail` (internal/api/pipelines.go's pipelineActionResponse) — the
+     * next "pipelines" WS broadcast (published immediately after every
+     * enable/disable) fills in the real reason if the new status is
+     * "paused". */
+    setEnabled(enabled: boolean, status?: PipelineStatus) {
       this.enabled = enabled
+      if (status) {
+        this.status = status
+        this.detail = ''
+      }
+    },
+
+    applyStatus(data: PipelinesTopicData) {
+      if (data.pipelineId !== this.pipelineId) return
+      this.status = data.status
+      this.detail = data.detail ?? ''
     },
 
     applyTick(data: PipelineTickTopicData) {
       if (data.pipelineId !== this.pipelineId) return
       this.liveTick = data.tick
       this.liveNodeValues = data.nodes
+      const now = Date.now()
+      for (const nodeId of Object.keys(data.nodes)) {
+        this.liveNodeUpdatedAt[nodeId] = now
+      }
       if (data.log && data.log.length > 0) {
         this.liveLog.push(...data.log)
         if (this.liveLog.length > LIVE_LOG_CAP) {
