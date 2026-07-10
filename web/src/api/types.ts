@@ -203,3 +203,56 @@ export interface WsErrorData {
   code: string
   message: string
 }
+
+// --- Simulation (docs/18-simulation.md, POST /api/v1/simulate) ---
+
+export interface SimulateScriptEntry {
+  tick: number
+  deviceId: string
+  value: number
+}
+
+/** POST /api/v1/simulate request body. `pipeline` is the editor's own
+ * unsaved draft, not a stored pipeline — it need not exist server-side. */
+export interface SimulateRequest {
+  pipeline: { name: string; tickMs: number; nodes: Node[]; edges: Edge[] }
+  steps: number
+  startTime?: string
+  inputs: Record<string, number>
+  script: SimulateScriptEntry[]
+}
+
+/** Currently the only code the server emits: a device the graph reads that
+ * `inputs` never seeded, which read its type's zero. */
+export interface SimulateWarning {
+  code: string
+  deviceId: string
+}
+
+/** One simulated tick. `nodes` is the same per-node value map the live
+ * `pipeline:{id}` WS topic sends. `writes` only names a device whose value
+ * changed that tick (the engine dedups) — a device absent from `writes`
+ * means "unchanged", not "no value". */
+export interface SimulateFrame {
+  tick: number
+  at: string
+  nodes: Record<string, boolean | number>
+  writes: Record<string, boolean | number>
+  log: { nodeId: string; label: string; value: boolean | number; timestamp: string }[]
+}
+
+/** A node evaluation error that stopped the run early. `frames` on the
+ * enclosing response still holds every tick captured before it — this is a
+ * 200, not a failed request. */
+export interface SimulateError {
+  tick: number
+  nodeId: string
+  message: string
+}
+
+export interface SimulateResponse {
+  tickMs: number
+  warnings: SimulateWarning[]
+  frames: SimulateFrame[]
+  error?: SimulateError
+}

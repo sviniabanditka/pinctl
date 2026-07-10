@@ -22,6 +22,7 @@ the system, ADR-4 on embedding), [08-node-catalog.md](./08-node-catalog.md)
 - [The console (`/`)](#the-console-)
 - [Design system](#design-system)
 - [Pipeline editor](#pipeline-editor)
+- [Simulate mode](#simulate-mode)
 - [Client-side validation mirroring](#client-side-validation-mirroring)
 - [Live debugging](#live-debugging)
 - [Pinia stores](#pinia-stores)
@@ -617,6 +618,103 @@ the server would return an edge-shaped error (`edges[2].to`); it doesn't.
    [Error toasts](#error-toasts). The graph is never reverted; edits stay on
    canvas so the user can fix and retry.
 
+## Simulate mode
+
+The editor's client of `POST /api/v1/simulate` ([18-simulation.md](./18-simulation.md)) —
+"what does this graph do?" without enabling it on live hardware. Toggled by a
+**Simulate** button in `EditorToolbar.vue`, immediately left of Enable/Disable
+(disabled while simulating, with an "Exit simulate mode first" tooltip — the
+two modes don't mix). Entering it writes nothing to `editor`'s graph state
+(`nodes`/`edges`/`name`/`tickMs`/`dirty` are all untouched) and calls no save
+endpoint; it only pauses this tab's own live `pipeline:{id}` WS subscription
+so a live tick can't race a simulated frame for the same canvas — a pipeline
+actually enabled on the server keeps running untouched, and leaving Simulate
+mode re-subscribes if it's still enabled.
+
+```
+┌────────────────────────────────────────────────────────────────┬──────────┐
+│  [name] tick[__]ms  tick 40 2026-…08:00:04.000  [Exit simulate] │ Simulate │
+├───────────────────────────────────────────────────────────────┤│  panel   │
+│                                                                  │──────────│
+│           (Vue Flow canvas — same node/edge renderers,          │ Inputs   │
+│            fed the selected simulated frame instead of a        │ Run      │
+│            live tick)                                           │ Timeline │
+│                                                                  │ Script   │
+└───────────────────────────────────────────────────────────────┘└──────────┘
+```
+
+### `SimulatePanel.vue`
+
+A docked sidebar (a flex sibling of `.canvas-wrapper`, like `LogPanel` docks
+below it — not a node-anchored popover, since it has no single node to
+anchor to), visible for as long as Simulate mode is active:
+
+- **A permanent honesty line.** In the tool's own voice, always visible while
+  simulating, not just a linked doc: *"This proves the logic, not the wiring.
+  It cannot know that pin 0 is the RX line, that WiFi jitters, or that a
+  relay's inrush resets the board."* Simulation proving the logic and saying
+  nothing about the wiring is stated in both places deliberately
+  ([18-simulation.md](./18-simulation.md#what-simulation-is-not)) — a user
+  who mistakes a green simulation for a working install has been misled by
+  the tool either way.
+- **Inputs** — one row per device a `device-read` node in the current draft
+  names, resolved from the `devices` store: `analog-in` → a 0–1023 slider
+  with a mono readout, `digital-in` → a toggle. A control the user hasn't
+  touched sends nothing in the request's `inputs` map — the panel does not
+  pre-seed every device to `0` — so the endpoint's own `unseeded_input`
+  warning is what surfaces the gap (rendered as an amber line naming the
+  device(s)), rather than the client silently deciding a value on the user's
+  behalf. A small "unseeded" tag marks an untouched control before the first
+  run even happens.
+- **Run controls** — `steps` (default 100, a number field capped at 2000 with
+  the cap stated as a hint), the pipeline's own `tickMs` shown read-only in
+  mono (simulate always uses the draft's configured tick, never a separate
+  rate), and a **Run** button (disabled while a request is in flight or the
+  graph fails client-side validation).
+- **Timeline scrubber** — appears once a run has produced at least one frame:
+  a range input over `frames`, ◀/▶ step buttons, and a play/pause button that
+  advances at a fixed ~150ms-per-frame rate — deliberately not real-time,
+  since a fast `tickMs` would make that unwatchable and a slow one would make
+  it a long wait for nothing. The current frame's `tick` and its simulated
+  `at` timestamp (mono) render both here and in the toolbar. **Keyboard:**
+  `←`/`→` step one frame, `Space` toggles play/pause, `Home`/`End` jump to
+  the first/last frame — active whenever focus isn't in a text field.
+- **Scripted changes** — a small mono list of `{tick, deviceId, value}`
+  entries (add via a compact device/tick/value row, not a keyframe editor),
+  each editable in place and removable. Adding, editing, or removing an entry
+  re-runs the simulation immediately, so the scrubber always reflects the
+  current script.
+- **Errors** — a `RunError` (`error.tick`/`error.nodeId`/`error.message`)
+  stops the run at that tick: `frames` (and therefore the scrubber's range)
+  simply ends there, the offending node gets the same `--signal-alert`
+  border/dot a server validation error would (a dedicated check on
+  `simResult.error.nodeId`, styled identically to — but tracked separately
+  from — `serverErrors`, so exiting Simulate mode can't leave a stale error
+  border behind), and the message renders in mono in the panel. A `400`
+  validation failure (bad graph shape) instead renders through the exact
+  same `serverErrors`/`mapValidationIssuesToNodes` path `Save` uses — the
+  same inline node markers, not a second error UI.
+- **Writes** — `device-write` nodes have no output port to reuse the node
+  live-value display from, so their simulated pin value is a dedicated small
+  readout fed by the frame's `writes` map, carried forward client-side
+  (`lib/simulate.ts`'s `carryForwardWrites`): a device absent from a frame's
+  `writes` keeps showing its last written value, and a small dot marks only
+  the frame(s) where it actually changed — one signal, not a second color.
+
+### Same rendering code, live or simulated
+
+`PipelineNode.vue` and `PipelineEdge.vue` don't know which mode fed them.
+Both read three `editor` store getters — `displayActive`, `displayNodeValues`,
+`displayTick` — that resolve to the live `liveTick`/`liveNodeValues` while
+debugging, or the scrubber's selected simulated frame while simulating; the
+per-node value rendering, edge bool-ring glyph, float64 pill, and colors
+downstream of that branch point are unmodified. This is deliberate, not
+incidental: it's how a simulated frame and a live tick end up visually
+indistinguishable, per [18-simulation.md](./18-simulation.md)'s "same engine,
+or it lies" principle applied to the UI layer, not just the server. Node
+staleness dimming (`--signal-warn` "board unreachable") is suppressed in
+Simulate mode — there's no board to go unreachable.
+
 ## Client-side validation mirroring
 
 The engine/store's real validation rules live in
@@ -690,7 +788,7 @@ live values" hint bar described in [Canvas and the add-node FAB](#canvas-and-the
 | `boards` | `BoardEntry[]` + loading/rescan flags | Actions: `fetch`, `rescan`, `rename(id, name)`, `subscribeLive()` (refcounted `boards` topic). `applyStatus` triggers a full re-`fetch` if an event names an unknown `boardId` (a newly rescanned board this store hasn't loaded yet), single-flighted against `loading`. |
 | `devices` | `Device[]` + `liveValues: Record<deviceId, { value, timestamp }>` | Actions: `fetch`, `create`, `update`, `remove`, `manualWrite(id, value)` (also locally stamps `liveValues`, since output devices never appear on the `devices` topic — the board only reports inputs), `subscribeLive()`. |
 | `pipelines` | `PipelineSummary[]` (list-view shape, no full graphs) | Actions: `fetch`, `create`, `remove`, `enable`, `disable`, `subscribeLive()` (`pipelines` topic). Full graphs are the `editor` store's concern, loaded per edit session. |
-| `editor` | The pipeline currently open for editing: `nodes`/`edges`/`name`/`tickMs`/`enabled` (the Vue Flow working model), `dirty`, client-mirrored validation getters (`clientMissingInputs`, `clientCycleNodes`, `hasClientErrors`), `serverErrors`/`serverWarnings` from the last `validate`/save response, and the live `liveTick`/`liveNodeValues`/`liveLog` while debugging | Actions: `load(id)`, `addNode`, `moveNode`, `removeNode`, `updateNodeConfig` (also prunes edges wired to a port a config change removed, e.g. shrinking `and.inputCount`), `addEdge`, `removeEdge`, `scheduleValidate`/`validateNow` (debounced `POST /pipelines/validate`), `save()`, `subscribeLive()`, `teardown()` (`$reset()` + releases the live subscription — called on route leave and on `pipelineId` change). |
+| `editor` | The pipeline currently open for editing: `nodes`/`edges`/`name`/`tickMs`/`enabled` (the Vue Flow working model), `dirty`, client-mirrored validation getters (`clientMissingInputs`, `clientCycleNodes`, `hasClientErrors`), `serverErrors`/`serverWarnings` from the last `validate`/save response, the live `liveTick`/`liveNodeValues`/`liveLog` while debugging, and [Simulate mode](#simulate-mode)'s `simulating`/`simInputs`/`simScript`/`simSteps`/`simResult`/`simFrameIndex` | Actions: `load(id)`, `addNode`, `moveNode`, `removeNode`, `updateNodeConfig` (also prunes edges wired to a port a config change removed, e.g. shrinking `and.inputCount`), `addEdge`, `removeEdge`, `scheduleValidate`/`validateNow` (debounced `POST /pipelines/validate`), `save()`, `subscribeLive()`, `teardown()` (`$reset()` + releases the live subscription — called on route leave and on `pipelineId` change), `enterSimulate()`/`exitSimulate()`, `runSimulation()`, `setSimFrameIndex`/`stepSimFrame`/`toggleSimPlay`. Getters `displayActive`/`displayNodeValues`/`displayTick` are the single branch point `PipelineNode.vue`/`PipelineEdge.vue` read through for either mode — see [Simulate mode](#simulate-mode). |
 
 Legacy note: a `board` (singular) store also exists in `src/stores/board.ts`,
 wrapping the v0.1 single-board `GET /board` endpoint. It predates the `boards`
@@ -783,7 +881,8 @@ PipelineEditorView                      (route: /pipelines/:id)
 ├── EditorToolbar
 │   ├── name field / tick field / live tick counter
 │   ├── error-count button                (shown only when errors exist)
-│   ├── enable/disable toggle
+│   ├── simulate toggle                   (see Simulate mode)
+│   ├── enable/disable toggle             (disabled while simulating)
 │   └── Save button + dirty dot
 ├── canvas-wrapper
 │   ├── debug-hint bar                    ("enable to see live values" / status)
@@ -806,7 +905,13 @@ PipelineEditorView                      (route: /pipelines/:id)
 ├── ConfigPanel                           (popover, anchored to selected node's rect)
 │   └── one field control per schema field (text/number/bool/enum/deviceRef/
 │       weekdays/inputList/expression)
-└── LogPanel                              (bottom drawer, toggled by log-fab)
+├── LogPanel                              (bottom drawer, toggled by log-fab)
+└── SimulatePanel                         (docked sidebar, shown while simulating)
+    ├── honesty line                      (always visible while simulating)
+    ├── inputs                            (per device-read device, role-seeded control)
+    ├── run controls                      (steps, tickMs readout, Run)
+    ├── timeline scrubber                 (frames range + step/play + tick/at)
+    └── scripted-change list              (add/edit/remove, re-runs on change)
 ```
 
 Cross-cutting, not part of the visual tree: the view subscribes/unsubscribes

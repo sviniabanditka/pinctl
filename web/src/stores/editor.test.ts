@@ -238,6 +238,35 @@ describe('editor store', () => {
     expect(store.detail).toBe('')
   })
 
+  it('enterSimulate() does not mutate the pipeline draft or trigger a save', () => {
+    const store = useEditorStore()
+    store.applyLoaded({
+      ...samplePipeline,
+      nodes: [{ id: 'n1', type: 'constant', config: { kind: 'float', value: 1 }, position: { x: 0, y: 0 } }],
+      edges: [],
+    })
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const nodesBefore = store.nodes
+    const edgesBefore = store.edges
+    const nameBefore = store.name
+    const tickMsBefore = store.tickMs
+
+    store.enterSimulate()
+
+    expect(store.simulating).toBe(true)
+    expect(store.nodes).toBe(nodesBefore)
+    expect(store.edges).toBe(edgesBefore)
+    expect(store.name).toBe(nameBefore)
+    expect(store.tickMs).toBe(tickMsBefore)
+    expect(store.dirty).toBe(false)
+    expect(fetchSpy).not.toHaveBeenCalled()
+
+    store.exitSimulate()
+    expect(store.simulating).toBe(false)
+  })
+
   it('applyTick() timestamps only the nodes present in that tick snapshot', () => {
     const store = useEditorStore()
     store.applyLoaded(samplePipeline)

@@ -24,6 +24,7 @@ import CommandPalette, { type PaletteGroup } from '../components/CommandPalette.
 import ConfigPanel from '../components/pipeline-editor/ConfigPanel.vue'
 import EditorToolbar from '../components/pipeline-editor/EditorToolbar.vue'
 import LogPanel from '../components/pipeline-editor/LogPanel.vue'
+import SimulatePanel from '../components/pipeline-editor/SimulatePanel.vue'
 
 const props = defineProps<{ id: string }>()
 
@@ -385,7 +386,7 @@ async function onToggleEnabled() {
   }
 }
 
-const debugHintVisible = computed(() => !editor.enabled)
+const debugHintVisible = computed(() => !editor.simulating && !editor.enabled)
 </script>
 
 <template>
@@ -400,10 +401,10 @@ const debugHintVisible = computed(() => !editor.enabled)
     <div class="editor-body">
       <div class="canvas-wrapper">
         <div v-if="debugHintVisible" class="debug-hint">Enable the pipeline to see live values.</div>
-        <div v-else-if="editor.status === 'paused'" class="debug-hint warn">
+        <div v-else-if="!editor.simulating && editor.status === 'paused'" class="debug-hint warn">
           Board unreachable — this pipeline resumes on its own when it returns.
         </div>
-        <div v-else-if="editor.status === 'error'" class="debug-hint alert">
+        <div v-else-if="!editor.simulating && editor.status === 'error'" class="debug-hint alert">
           {{ editor.status }}<template v-if="editor.detail"> — {{ editor.detail }}</template>
         </div>
         <VueFlow
@@ -457,6 +458,8 @@ const debugHintVisible = computed(() => !editor.enabled)
           @close="paletteOpen = false"
         />
       </div>
+
+      <SimulatePanel v-if="editor.simulating" />
     </div>
 
     <ConfigPanel

@@ -52,10 +52,16 @@ const errors = computed(() => editor.serverErrors[props.id] ?? [])
 const missingInputs = computed(() => editor.clientMissingInputs?.[props.id] ?? [])
 const hasCycle = computed(() => editor.clientCycleNodes?.has(props.id) ?? false)
 
-const liveActive = computed(() => editor.enabled && editor.liveTick !== null)
+/** True when Simulate mode's last run stopped on this exact node (docs/18-simulation.md's `error.nodeId`) — styled identically to a server validation error (`--signal-alert`), just from a different source. */
+const simError = computed(() => editor.simulating && editor.simResult?.error?.nodeId === props.id)
+
+// editor.displayActive/displayNodeValues are the one branch point between
+// live and simulated rendering (see the editor store's doc comment on
+// them) — everything below this line is oblivious to which one is active.
+const liveActive = computed(() => editor.displayActive)
 const outputValue = computed(() => {
   if (!liveActive.value) return undefined
-  return editor.liveNodeValues[props.id]
+  return editor.displayNodeValues[props.id]
 })
 
 /** While the pipeline is paused (docs/07-pipeline-engine.md "Degraded
@@ -66,11 +72,22 @@ const outputValue = computed(() => {
  * `liveNodeUpdatedAt`) means this recomputes every tick even when *this*
  * node's own entry didn't refresh, so the dimming kicks in the moment
  * enough tick periods have passed, not only when some other value change
- * happens to re-render the node. */
+ * happens to re-render the node. Simulate mode has no board to go
+ * unreachable, so staleness never applies there. */
 const stale = computed(() => {
   void editor.liveTick
+  if (editor.simulating) return false
   return editor.status === 'paused' && isStaleTickValue(editor.liveNodeUpdatedAt[props.id], editor.tickMs)
 })
+
+// -- Simulate mode: device-write "what would have reached the pin" --------
+// device-write nodes have no output port (nothing to wire downstream from
+// a sink), so they never render through outputValue above — this is a
+// dedicated small display fed by the frame's `writes` map (carried forward
+// across frames client-side, see lib/simulate.ts's carryForwardWrites),
+// since there is no live equivalent to reuse code from.
+const writeDeviceId = computed(() => (props.data.nodeType === 'device-write' ? String(props.data.config.deviceId ?? '') : ''))
+const writeState = computed(() => (writeDeviceId.value ? editor.simWriteCarry[writeDeviceId.value] : undefined))
 
 /** True when the live value's rendered text is identical to the config
  * summary's (e.g. `constant`: summary is the literal value, live value is
@@ -135,8 +152,8 @@ function valueClass(v: boolean | number | undefined): string {
     class="pipeline-node"
     :class="{
       selected: props.selected,
-      'has-error': errors.length > 0,
-      'has-warning': errors.length === 0 && (missingInputs.length > 0 || hasCycle),
+      'has-error': errors.length > 0 || simError,
+      'has-warning': errors.length === 0 && !simError && (missingInputs.length > 0 || hasCycle),
       'is-expression': isExpression,
     }"
     :style="{ minHeight: `${minHeight}px` }"
@@ -185,9 +202,23 @@ function valueClass(v: boolean | number | undefined): string {
       >
         <span class="mono num" :class="[valueClass(outputValue), { pulse: pulsing }]">{{ formatValue(outputValue) }}</span>
       </div>
+
+      <div
+        v-if="editor.simulating && writeDeviceId && writeState"
+        class="node-live-value node-write-value"
+        :title="writeState.changed ? 'Changed this tick' : 'Carried forward from an earlier tick — unchanged'"
+      >
+        <span class="write-arrow" aria-hidden="true">→</span>
+        <span class="mono num" :class="valueClass(writeState.value)">{{ formatValue(writeState.value) }}</span>
+        <span v-if="writeState.changed" class="write-changed-dot" aria-hidden="true" />
+      </div>
     </div>
 
-    <div v-if="errors.length > 0" class="node-status-dot error" :title="errors.map((e) => e.message).join('\n')" />
+    <div
+      v-if="errors.length > 0 || simError"
+      class="node-status-dot error"
+      :title="simError ? editor.simResult?.error?.message : errors.map((e) => e.message).join('\n')"
+    />
     <div
       v-else-if="missingInputs.length > 0 || hasCycle"
       class="node-status-dot warning"
@@ -297,6 +328,27 @@ function valueClass(v: boolean | number | undefined): string {
   opacity: 0.4;
 }
 
+
+.write-arrow {
+  color: var(--ink-faint);
+  font-size: 0.6875rem;
+}
+
+/* The one signal for "this write changed on the selected tick" — a small
+   dot beside the value, not a second color (docs/18-simulation.md build
+   note: "one signal, not two"). */
+.write-changed-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink);
+  flex-shrink: 0;
+}
+
+.node-write-value {
+  align-items: center;
+  gap: var(--space-1);
+}
 
 .pulse {
   animation: value-pulse 0.3s ease;

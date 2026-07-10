@@ -30,11 +30,17 @@ const isFlagged = computed(
   () =>
     (editor.serverErrors[props.source]?.length ?? 0) > 0 ||
     (editor.serverErrors[props.target]?.length ?? 0) > 0 ||
-    (editor.clientCycleNodes.has(props.source) && editor.clientCycleNodes.has(props.target)),
+    (editor.clientCycleNodes.has(props.source) && editor.clientCycleNodes.has(props.target)) ||
+    // Simulate mode: a run that stopped on this edge's source or target
+    // node is implicated the same way a server validation error would be.
+    (editor.simulating && (editor.simResult?.error?.nodeId === props.source || editor.simResult?.error?.nodeId === props.target)),
 )
 
-const liveActive = computed(() => editor.enabled && editor.liveTick !== null)
-const liveValue = computed(() => (liveActive.value ? editor.liveNodeValues[props.source] : undefined))
+// editor.displayActive/displayNodeValues: see PipelineNode.vue's identical
+// comment — this is the same live/simulated branch point, reused so an
+// edge's rendering can't tell which mode fed it.
+const liveActive = computed(() => editor.displayActive)
+const liveValue = computed(() => (liveActive.value ? editor.displayNodeValues[props.source] : undefined))
 
 /** Chrome is monochrome; colour + the travelling-dash flourish are reserved for a running pipeline's live value. */
 const signalColor = computed(() => {

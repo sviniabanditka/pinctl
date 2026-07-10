@@ -25,7 +25,18 @@ const saveTooltip = computed(() => {
   return 'Save changes'
 })
 
-const enableDisabled = computed(() => editor.dirty)
+const enableDisabled = computed(() => editor.dirty || editor.simulating)
+
+function toggleSimulate() {
+  if (editor.simulating) editor.exitSimulate()
+  else editor.enterSimulate()
+}
+
+function formatSimAt(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toISOString().replace('T', ' ').replace('Z', '')
+}
 
 // A pipeline whose board is away keeps ticking and stays enabled
 // (docs/07-pipeline-engine.md "Degraded ticks") — the enable toggle alone
@@ -77,7 +88,10 @@ function selectFirstError() {
       <span class="label">ms</span>
     </label>
 
-    <span v-if="editor.enabled && editor.liveTick !== null" class="tick-counter mono num">tick {{ editor.liveTick }}</span>
+    <span v-if="!editor.simulating && editor.enabled && editor.liveTick !== null" class="tick-counter mono num">tick {{ editor.liveTick }}</span>
+    <span v-if="editor.simulating && editor.simCurrentFrame" class="tick-counter mono num sim-tick-counter">
+      tick {{ editor.simCurrentFrame.tick }} <span class="sim-at">{{ formatSimAt(editor.simCurrentFrame.at) }}</span>
+    </span>
 
     <button v-if="errorNodeIds.size > 0" class="quiet error-count" @click="selectFirstError">
       {{ errorNodeIds.size }} error{{ errorNodeIds.size > 1 ? 's' : '' }}
@@ -92,9 +106,19 @@ function selectFirstError() {
     <span v-if="editor.dirty" class="dot dirty-dot" title="Unsaved changes" />
 
     <button
+      class="simulate-toggle"
+      :class="{ active: editor.simulating }"
+      :aria-pressed="editor.simulating"
+      title="Simulate: run this graph against a fake clock and fake devices — never touches hardware or the store."
+      @click="toggleSimulate"
+    >
+      {{ editor.simulating ? 'Exit simulate' : 'Simulate' }}
+    </button>
+
+    <button
       class="enable-toggle"
       :disabled="props.toggleBusy || enableDisabled"
-      :title="enableDisabled ? 'Save first' : ''"
+      :title="editor.simulating ? 'Exit simulate mode first' : enableDisabled ? 'Save first' : ''"
       @click="emit('toggleEnabled')"
     >
       <span class="dot" :class="{ running: editor.enabled && editor.status !== 'paused', warn: editor.status === 'paused' }" />
@@ -182,5 +206,20 @@ function selectFirstError() {
 
 .dirty-dot {
   background: var(--signal-warn);
+}
+
+.simulate-toggle.active {
+  border-color: var(--hairline-strong);
+  color: var(--ink);
+  background: var(--raised);
+}
+
+.sim-tick-counter {
+  display: inline-flex;
+  gap: var(--space-2);
+}
+
+.sim-at {
+  color: var(--ink-faint);
 }
 </style>

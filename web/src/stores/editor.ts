@@ -5,13 +5,15 @@
 // the editor route — see PipelineEditorView.
 
 import { defineStore } from 'pinia'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import type {
   Pipeline,
   PipelinesTopicData,
   PipelineStatus,
   PipelineTickTopicData,
   PipelineWriteRequest,
+  SimulateResponse,
+  SimulateScriptEntry,
   ValidationIssue,
 } from '../api/types'
 import {
@@ -26,6 +28,19 @@ import {
 } from '../lib/graphMapping'
 import { NODE_SCHEMAS, nodeInputs, nodeOutputs, type NodeSchema } from '../lib/nodeSchemas'
 import { findCycleNodes, findUnconnectedRequiredInputs } from '../lib/clientValidation'
+import {
+  buildSimulateRequest,
+  carryForwardWrites,
+  clampFrameIndex,
+  clampSimSteps,
+  mapUnseededWarnings,
+  readDeviceIds,
+  stepFrameIndex,
+  SIM_DEFAULT_STEPS,
+  SIM_PLAYBACK_INTERVAL_MS,
+  type WriteState,
+} from '../lib/simulate'
+import { useDevicesStore } from './devices'
 import { useWsStore } from './ws'
 
 const VALIDATE_DEBOUNCE_MS = 400
@@ -83,6 +98,26 @@ export const useEditorStore = defineStore('editor', {
     lastValidateErrors: [] as ValidationIssue[],
 
     liveUnsub: null as (() => void) | null,
+
+    // -- Simulate mode (docs/18-simulation.md, POST /api/v1/simulate) --------
+    // A read-only "what does this graph do?" mode: it POSTs the editor's own
+    // unsaved draft, never touches the store, and never disturbs a pipeline
+    // actually running on the server (see enterSimulate/exitSimulate).
+    simulating: false,
+    simSteps: SIM_DEFAULT_STEPS,
+    /** Only devices the user has explicitly touched get an entry here — an
+     * untouched device is deliberately left unseeded so the server's own
+     * `unseeded_input` warning fires, rather than the client pre-empting it
+     * by defaulting every control to 0. */
+    simInputs: {} as Record<string, number>,
+    simScript: [] as SimulateScriptEntry[],
+    simResult: null as SimulateResponse | null,
+    simFrameIndex: 0,
+    simRunning: false,
+    /** A request-level failure message (network error, non-validation 4xx/5xx) — distinct from serverErrors, which validation_error responses populate. */
+    simRequestError: '',
+    simPlaying: false,
+    simPlayTimer: null as ReturnType<typeof setInterval> | null,
   }),
 
   getters: {
@@ -98,6 +133,53 @@ export const useEditorStore = defineStore('editor', {
     /** Save is disabled while any client-mirrored rule is violated (docs/11 "Save": "no point round-tripping..."). */
     hasClientErrors(): boolean {
       return this.clientCycleNodes.size > 0 || Object.keys(this.clientMissingInputs).length > 0
+    },
+
+    /** Device ids the current draft's `device-read` nodes name — the Simulate inputs panel's row list. */
+    simReadDeviceIds(): string[] {
+      return readDeviceIds(this.nodes.map(flowNodeToModelNode))
+    },
+
+    simFrameCount(): number {
+      return this.simResult?.frames.length ?? 0
+    },
+
+    simCurrentFrame(): SimulateResponse['frames'][number] | null {
+      return this.simResult?.frames[this.simFrameIndex] ?? null
+    },
+
+    /** Per-device write carry-forward (lib/simulate.ts's carryForwardWrites) for the currently selected frame. */
+    simWriteCarry(): Record<string, WriteState> {
+      if (!this.simResult) return {}
+      return carryForwardWrites(this.simResult.frames)[this.simFrameIndex] ?? {}
+    },
+
+    /** `unseeded_input` warnings, mapped to device names, deduped. */
+    simUnseededWarnings(): { deviceId: string; deviceName: string }[] {
+      if (!this.simResult) return []
+      const devices = useDevicesStore()
+      return mapUnseededWarnings(this.simResult.warnings, devices.devices)
+    },
+
+    /**
+     * The node/tick source PipelineNode.vue and PipelineEdge.vue render —
+     * the live tick snapshot while debugging, or the selected simulated
+     * frame while simulating. Reusing these three getters (rather than each
+     * component branching on `editor.simulating` itself) is what makes a
+     * simulated frame and a live tick render through *identical* code, per
+     * docs/18-simulation.md's "renders through the live-value code path".
+     */
+    displayActive(): boolean {
+      if (this.simulating) return this.simCurrentFrame !== null
+      return this.enabled && this.liveTick !== null
+    },
+    displayNodeValues(): Record<string, boolean | number> {
+      if (this.simulating) return this.simCurrentFrame?.nodes ?? {}
+      return this.liveNodeValues
+    },
+    displayTick(): number | null {
+      if (this.simulating) return this.simCurrentFrame?.tick ?? null
+      return this.liveTick
     },
   },
 
@@ -341,7 +423,125 @@ export const useEditorStore = defineStore('editor', {
       this.validateTimer = null
       this.liveUnsub?.()
       this.liveUnsub = null
+      this.stopSimPlayback()
       this.$reset()
+    },
+
+    // -- Simulate mode ---------------------------------------------------
+
+    /**
+     * Enters Simulate mode. Deliberately touches nothing that would mark
+     * the draft dirty or reach the store: no node/edge/name/tickMs field is
+     * written. The only side effect is pausing this browser tab's own live
+     * WS subscription (so a live tick can't race a simulated frame for the
+     * same canvas) — the server-side pipeline, if enabled, keeps running
+     * untouched; exitSimulate() re-subscribes if it's still enabled.
+     */
+    enterSimulate() {
+      if (this.simulating) return
+      this.simulating = true
+      this.simResult = null
+      this.simFrameIndex = 0
+      this.simRequestError = ''
+      this.simInputs = {}
+      this.simScript = []
+      this.stopSimPlayback()
+      this.liveUnsub?.()
+      this.liveUnsub = null
+    },
+
+    /** Leaves Simulate mode and restores the live view (docs/18-simulation.md UI note: "leaving simulate mode restores the live view"). */
+    exitSimulate() {
+      if (!this.simulating) return
+      this.stopSimPlayback()
+      this.simulating = false
+      this.simResult = null
+      this.simRequestError = ''
+      this.subscribeLive()
+    },
+
+    setSimSteps(n: number) {
+      this.simSteps = clampSimSteps(n)
+    },
+
+    setSimInput(deviceId: string, value: number) {
+      this.simInputs = { ...this.simInputs, [deviceId]: value }
+    },
+
+    addSimScriptEntry(entry: SimulateScriptEntry) {
+      this.simScript = [...this.simScript, entry].sort((a, b) => a.tick - b.tick)
+      this.runSimulation()
+    },
+
+    updateSimScriptEntry(index: number, patch: Partial<SimulateScriptEntry>) {
+      this.simScript = this.simScript.map((e, i) => (i === index ? { ...e, ...patch } : e))
+      this.runSimulation()
+    },
+
+    removeSimScriptEntry(index: number) {
+      this.simScript = this.simScript.filter((_, i) => i !== index)
+      this.runSimulation()
+    },
+
+    /** Runs POST /api/v1/simulate against the current draft + inputs/script/steps. A `validation_error` 400 renders through the same `serverErrors` path Save uses; anything else surfaces as `simRequestError`. */
+    async runSimulation() {
+      if (!this.simulating) return
+      this.simRunning = true
+      this.simRequestError = ''
+      try {
+        const req = buildSimulateRequest(this.toWriteRequest(), this.simInputs, this.simScript, this.simSteps)
+        const res = await api.post<SimulateResponse>('/simulate', req)
+        this.simResult = res
+        this.simFrameIndex = clampFrameIndex(this.simFrameIndex, res.frames.length)
+        this.serverErrors = {}
+      } catch (err) {
+        this.simResult = null
+        if (err instanceof ApiError && err.code === 'validation_error') {
+          const details = err.details as { errors?: ValidationIssue[] } | undefined
+          this.applyServerErrors(details?.errors ?? [])
+          this.simRequestError = 'Graph is invalid — see the flagged node(s).'
+        } else if (err instanceof ApiError) {
+          this.simRequestError = err.message
+        } else {
+          this.simRequestError = 'Simulation request failed.'
+        }
+      } finally {
+        this.simRunning = false
+      }
+    },
+
+    setSimFrameIndex(i: number) {
+      this.simFrameIndex = clampFrameIndex(i, this.simFrameCount)
+    },
+
+    /** Steps the scrubber by `delta` frames (◀/▶ buttons, ←/→ keys), clamped to the run's actual frame count — which is shorter than the requested `steps` whenever the run ended early on a node error. */
+    stepSimFrame(delta: number) {
+      this.setSimFrameIndex(stepFrameIndex(this.simFrameIndex, this.simFrameCount, delta))
+    },
+
+    toggleSimPlay() {
+      if (this.simPlaying) this.stopSimPlayback()
+      else this.startSimPlayback()
+    },
+
+    /** Advances the scrubber at a fixed, sane rate (SIM_PLAYBACK_INTERVAL_MS) — not real-time, which a fast tick would make unwatchable. Stops automatically at the last frame. */
+    startSimPlayback() {
+      if (this.simFrameCount === 0) return
+      this.stopSimPlayback()
+      this.simPlaying = true
+      this.simPlayTimer = setInterval(() => {
+        if (this.simFrameIndex >= this.simFrameCount - 1) {
+          this.stopSimPlayback()
+          return
+        }
+        this.simFrameIndex += 1
+      }, SIM_PLAYBACK_INTERVAL_MS)
+    },
+
+    stopSimPlayback() {
+      if (this.simPlayTimer) clearInterval(this.simPlayTimer)
+      this.simPlayTimer = null
+      this.simPlaying = false
     },
   },
 })

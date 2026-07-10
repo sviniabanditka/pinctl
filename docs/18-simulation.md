@@ -109,6 +109,35 @@ Simulation proves the *logic*, and says nothing about the *wiring*.
 Both of these belong in the UI's copy, not just here: a user who mistakes a
 green simulation for a working install has been misled by the tool.
 
+**The UI says so too.** The web editor's Simulate mode carries this as a
+permanent, quiet line in its side panel, in the tool's own voice, not just in
+this doc — see [11-web-ui.md](./11-web-ui.md#simulate-mode).
+
+## The UI
+
+The web editor (`/pipelines/:id`) has a **Simulate mode**, toggled from the
+toolbar, that is the client of this endpoint: it POSTs the editor's own
+unsaved draft (never the saved pipeline) and renders the response.
+
+- **Inputs** — one control per device a `device-read` node names, seeded from
+  the device's role (`analog-in` → slider 0–1023, `digital-in` → toggle). A
+  control the user never touches sends nothing for that device, so the
+  server's own `unseeded_input` warning is what tells them, rather than the
+  client silently defaulting it and hiding the question.
+- **Scripted changes** — a small mono list of `{tick, deviceId, value}`
+  entries, editable/removable, built while scrubbing a run rather than
+  requiring the whole script to be authored up front.
+- **The timeline scrubber** — a range input over `frames`, plus step/play
+  controls. Frames a run's `error` cut short simply aren't there to scrub
+  past — the scrubber's range is `frames.length`, not the requested `steps`.
+- **Rendering** — a selected frame's `nodes`/`writes` feed the *same*
+  component code that renders a live `pipeline:{id}` tick, so a simulated
+  frame and a live one are visually indistinguishable except for the mode
+  indicator itself.
+
+Full UI detail (keyboard map, write carry-forward, component structure) is in
+[11-web-ui.md](./11-web-ui.md#simulate-mode).
+
 ## Determinism
 
 Runs are reproducible because everything that could vary is injected: the
