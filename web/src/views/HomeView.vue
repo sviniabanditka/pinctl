@@ -11,6 +11,7 @@ import { usePipelinesStore } from '../stores/pipelines'
 import { useWsStore } from '../stores/ws'
 import { pushErrorToast, pushToast } from '../composables/toast'
 import { isStaleValue } from '../lib/staleness'
+import { formatNumber } from '../lib/format'
 import Sparkline from '../components/Sparkline.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import CommandPalette, { type PaletteGroup } from '../components/CommandPalette.vue'
@@ -221,7 +222,7 @@ function displayValue(d: Device): string {
   const v = currentValue(d)
   if (v === undefined) return '—'
   if (typeof v === 'boolean') return v ? 'true' : 'false'
-  return String(v)
+  return formatNumber(v)
 }
 
 async function toggleDigital(d: Device) {
@@ -239,20 +240,60 @@ async function toggleDigital(d: Device) {
   }
 }
 
-async function writePwm(d: Device, value: number) {
+/**
+ * While a slider is being dragged, its position is the user's, not the
+ * server's: an echoed live value arriving mid-gesture would yank the thumb
+ * backwards. Cleared once the write for the final position settles.
+ */
+const sliderDraft = ref<Record<string, number>>({})
+/** Coalesces drag writes: at most one in flight per device, latest wins. */
+const sliderPending = ref<Record<string, number | undefined>>({})
+
+function pwmValue(d: Device): number {
+  const draft = sliderDraft.value[d.id]
+  if (draft !== undefined) return draft
+  const v = devices.liveValues[d.id]?.value
+  return typeof v === 'number' ? v : 0
+}
+
+/** Called on every `input` event, so the device follows the thumb. */
+function onSliderInput(d: Device, value: number) {
+  sliderDraft.value[d.id] = value
+  if (writeBusy.value[d.id]) {
+    sliderPending.value[d.id] = value // a write is in flight; queue the latest
+    return
+  }
+  void flushSlider(d, value)
+}
+
+async function flushSlider(d: Device, value: number) {
+  // Never disable the input mid-gesture: a disabled range input loses pointer
+  // capture, and the rest of the drag — or the click that started it — is
+  // swallowed by the browser.
   writeBusy.value[d.id] = true
   try {
     await devices.manualWrite(d.id, value)
   } catch (err) {
     pushErrorToast(err)
-  } finally {
+    delete sliderDraft.value[d.id] // let the server's truth win
+    sliderPending.value[d.id] = undefined
     writeBusy.value[d.id] = false
+    return
   }
+  writeBusy.value[d.id] = false
+
+  const queued = sliderPending.value[d.id]
+  if (queued !== undefined && queued !== value) {
+    sliderPending.value[d.id] = undefined
+    await flushSlider(d, queued)
+    return
+  }
+  sliderPending.value[d.id] = undefined
 }
 
-function pwmValue(d: Device): number {
-  const v = devices.liveValues[d.id]?.value
-  return typeof v === 'number' ? v : 0
+/** The gesture is over: hand the thumb back to the live value. */
+function onSliderCommit(d: Device) {
+  delete sliderDraft.value[d.id]
 }
 
 const historyDevice = ref<Device | null>(null)
@@ -549,12 +590,13 @@ function onWindowKeydown(ev: KeyboardEvent) {
                     type="range"
                     min="0"
                     max="255"
-                    :disabled="writeBusy[d.id]"
                     :value="pwmValue(d)"
                     :aria-label="`${d.name} PWM value`"
-                    @change="writePwm(d, Number(($event.target as HTMLInputElement).value))"
+                    @input="onSliderInput(d, Number(($event.target as HTMLInputElement).value))"
+                    @change="onSliderCommit(d)"
+                    @pointerup="onSliderCommit(d)"
                   />
-                  <span class="cell-mono pwm-value">{{ pwmValue(d) }}</span>
+                  <span class="cell-mono pwm-value">{{ formatNumber(pwmValue(d)) }}</span>
                 </div>
               </template>
               <template v-else-if="d.role === 'servo'">
@@ -563,10 +605,11 @@ function onWindowKeydown(ev: KeyboardEvent) {
                     type="range"
                     min="0"
                     max="180"
-                    :disabled="writeBusy[d.id]"
                     :value="pwmValue(d)"
                     :aria-label="`${d.name} servo angle`"
-                    @change="writePwm(d, Number(($event.target as HTMLInputElement).value))"
+                    @input="onSliderInput(d, Number(($event.target as HTMLInputElement).value))"
+                    @change="onSliderCommit(d)"
+                    @pointerup="onSliderCommit(d)"
                   />
                   <span class="cell-mono pwm-value">{{ pwmValue(d) }}°</span>
                 </div>

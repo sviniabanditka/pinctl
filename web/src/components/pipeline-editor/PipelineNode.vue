@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatNumber } from '../../lib/format'
 import { computed, ref, watch } from 'vue'
 import type { NodeProps } from '@vue-flow/core'
 import { Handle, Position } from '@vue-flow/core'
@@ -139,7 +140,7 @@ const minHeight = computed(
 
 function formatValue(v: boolean | number | undefined): string {
   if (v === undefined) return ''
-  return typeof v === 'boolean' ? (v ? 'true' : 'false') : String(Math.round(v * 100) / 100)
+  return typeof v === 'boolean' ? (v ? 'true' : 'false') : formatNumber(v)
 }
 
 function valueClass(v: boolean | number | undefined): string {

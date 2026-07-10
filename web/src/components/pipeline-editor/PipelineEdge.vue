@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatNumber } from '../../lib/format'
 import { computed } from 'vue'
 import type { EdgeProps } from '@vue-flow/core'
 import { BaseEdge, EdgeLabelRenderer, getBezierPath } from '@vue-flow/core'
@@ -70,7 +71,7 @@ const isBool = computed(() => typeof liveValue.value === 'boolean')
 
 function formatValue(v: boolean | number | undefined): string {
   if (v === undefined) return ''
-  return typeof v === 'boolean' ? (v ? 'true' : 'false') : String(Math.round(v * 100) / 100)
+  return typeof v === 'boolean' ? (v ? 'true' : 'false') : formatNumber(v)
 }
 </script>
 

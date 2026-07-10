@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatNumber } from '../../lib/format'
 // Bottom drawer showing the live `log` node stream while debugging
 // (docs/08-node-catalog.md "log", docs/10-api.md's "pipeline:{id}" topic's
 // optional `log` array). Entries accumulate in editor.liveLog (capped at
@@ -23,7 +24,7 @@ function formatTime(ts: string): string {
 }
 
 function formatValue(v: boolean | number): string {
-  return typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v)
+  return typeof v === 'boolean' ? (v ? 'true' : 'false') : formatNumber(v)
 }
 
 function onKeydown(ev: KeyboardEvent) {
