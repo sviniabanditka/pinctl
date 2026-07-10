@@ -6,9 +6,11 @@
 //
 // -port is a dev convenience that bypasses discovery entirely and opens
 // exactly one board.Session directly, matching v0.1-v0.3's behavior — no
-// Manager, no reconnect loop, no boards.json. Omit it (the production path)
-// to let config.yaml's serial allowlist and the multi-board Manager drive
-// everything.
+// Manager, no reconnect loop, no boards.json. It accepts either a serial
+// port path or a network board address (tcp://host:port,
+// docs/17-network-boards.md), since board.Open dispatches on the address
+// itself. Omit it (the production path) to let config.yaml's serial
+// allowlist / network.boards and the multi-board Manager drive everything.
 package main
 
 import (
@@ -57,7 +59,7 @@ var version = "dev"
 
 func main() {
 	configPath := flag.String("config", "", "path to config.yaml (default: /etc/pinctl/config.yaml, then ~/.pinctl/config.yaml; missing file = defaults)")
-	port := flag.String("port", "", "dev convenience: connect to exactly this serial port, bypassing discovery/allowlist (e.g. /dev/ttyACM0)")
+	port := flag.String("port", "", "dev convenience: connect to exactly this board address, bypassing discovery/allowlist — a serial port (e.g. /dev/ttyACM0) or a network board address (tcp://host:port, see docs/17-network-boards.md)")
 	listen := flag.String("listen", "", "override http.addr from config.yaml")
 	dataDir := flag.String("data", "", "override data_dir from config.yaml")
 	flag.Parse()
@@ -164,11 +166,15 @@ func main() {
 		sessPort = *port
 		io = boardio.New(realSess)
 	} else {
-		log.Printf("pinctl: multi-board mode: serial allowlist %v", cfg.Serial.Allowlist)
+		log.Printf("pinctl: multi-board mode: serial allowlist %v, network boards %v", cfg.Serial.Allowlist, cfg.Network.Boards)
 		boardMgr = board.NewManager(board.ManagerConfig{
-			Allowlist: cfg.Serial.Allowlist,
-			Store:     st,
-			OnReady:   onReady,
+			Allowlist:          cfg.Serial.Allowlist,
+			NetworkBoards:      cfg.Network.Boards,
+			NetworkDialTimeout: time.Duration(cfg.Network.DialTimeout),
+			NetworkReadTimeout: time.Duration(cfg.Network.ReadTimeout),
+			NetworkKeepalive:   time.Duration(cfg.Network.Keepalive),
+			Store:              st,
+			OnReady:            onReady,
 		})
 		io = boardio.NewManagerIO(boardMgr)
 		sess = board.NewAnyConnectedSession(boardMgr)

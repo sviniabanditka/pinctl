@@ -25,3 +25,14 @@ func identityForPort(p PortInfo) model.Identity {
 	}
 	return model.Identity{Kind: "port-path", Key: p.Path}
 }
+
+// identityForNetwork resolves a network board's identity, per
+// docs/17-network-boards.md's "Identity": Firmata offers no unique
+// identifier and a TCP socket has none either, so the configured address
+// itself — verbatim, scheme included ("tcp://esp32-porch.local:3030") —
+// is the identity key. Unlike identityForPort above, there's no fallback:
+// an address is either explicitly configured (and therefore known) or not
+// dialled at all.
+func identityForNetwork(addr string) model.Identity {
+	return model.Identity{Kind: "network", Key: addr}
+}

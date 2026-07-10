@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,17 +36,39 @@ import (
 type Session struct {
 	transport Transport
 
-	// portPath is the serial port this session was opened against, set
-	// once (via the internal withPortPath option, from Open) before the
-	// read loop starts — read-only from then on, so it's safe to read
-	// from any goroutine without s.mu. Empty when the session was built
-	// directly over an injected Transport (tests, or newSession callers
-	// that skip Open). Used only for logging.
+	// portPath is the address (serial port path or tcp://host:port) this
+	// session was opened against, set once (via the internal withPortPath
+	// option, from Open) before the read loop starts — read-only from then
+	// on, so it's safe to read from any goroutine without s.mu. Empty when
+	// the session was built directly over an injected Transport (tests, or
+	// newSession callers that skip Open). Used only for logging.
 	portPath string
 
 	bootDelay          time.Duration
 	handshakeTimeout   time.Duration
 	samplingIntervalMS int
+
+	// dialTimeout/readTimeout/keepalive configure a network (tcp://)
+	// transport (docs/17-network-boards.md "Liveness"); meaningless for a
+	// serial address, but harmless to set regardless — Open only consults
+	// them when addr's scheme is tcp://.
+	dialTimeout time.Duration
+	readTimeout time.Duration
+	keepalive   time.Duration
+
+	// isNetwork/heartbeatInterval drive the network heartbeat
+	// (docs/17-network-boards.md "Liveness", point 4): only a network
+	// transport needs prodding to keep the read deadline from tripping on
+	// a quiet-but-alive board. heartbeatInterval is readTimeout/2, set by
+	// Open for a tcp:// address.
+	isNetwork         bool
+	heartbeatInterval time.Duration
+
+	// lastActivity is the Unix-nanosecond timestamp of the most recent
+	// successful transport Read, updated from the read loop only.
+	// heartbeatLoop reads it (atomically, no s.mu) to decide whether the
+	// board has been quiet long enough to need prodding.
+	lastActivity atomic.Int64
 
 	writeMu sync.Mutex // serializes writes onto the transport
 
@@ -54,6 +77,14 @@ type Session struct {
 	pinIndex      map[int]PinCapability
 	handshakeDone bool // set at the end of handshake(); gates reboot detection
 	onReboot      func()
+
+	// heartbeatAwaiting is set right after heartbeatLoop sends a solicited
+	// EncodeReportVersionQuery() and cleared by the next ProtocolVersionMsg
+	// applyMessage sees — which lets applyMessage tell a heartbeat's own
+	// reply apart from a genuine unsolicited reboot report (see
+	// applyMessage's ProtocolVersionMsg case): only the latter must fire
+	// triggerReboot. Guarded by mu, same as onReboot/handshakeDone.
+	heartbeatAwaiting bool
 
 	firmwareName                 string
 	firmwareMajor, firmwareMinor int
@@ -76,20 +107,77 @@ type Session struct {
 	done      chan struct{}
 }
 
-// Open opens the serial port at portPath, waits out the boot delay, runs
-// the Firmata handshake, and returns a Session in steady state (read loop
-// running). See docs/05-serial-protocol.md's "Session lifecycle".
-func Open(portPath string, opts ...Option) (*Session, error) {
-	t, err := openSerialTransport(portPath)
-	if err != nil {
-		return nil, fmt.Errorf("board: open %s: %w", portPath, err)
+// Open opens addr — a serial port path (e.g. "/dev/ttyACM0") or a network
+// board address ("tcp://host:port", see docs/17-network-boards.md) — waits
+// out the boot delay, runs the Firmata handshake, and returns a Session in
+// steady state (read loop running, plus a heartbeat loop for a network
+// address). One Open, one Session type: the scheme is the only thing that
+// dispatches, nothing downstream (Session, Manager) branches on it beyond
+// that. See docs/05-serial-protocol.md's "Session lifecycle".
+func Open(addr string, opts ...Option) (*Session, error) {
+	// Options are consulted before the transport exists (dial/read/
+	// keepalive timeouts must be known to open a TCP connection at all),
+	// so apply them once to a throwaway draft first — Option funcs are
+	// pure field setters, applying them again inside newSession below is
+	// harmless and keeps newSession the single place that builds a
+	// Session's zero value.
+	draft := &Session{
+		dialTimeout: defaultDialTimeout,
+		readTimeout: defaultReadTimeout,
+		keepalive:   defaultKeepalive,
 	}
-	s, err := newSession(t, append(opts, withPortPath(portPath))...)
+	for _, opt := range opts {
+		opt(draft)
+	}
+
+	var (
+		t                Transport
+		err              error
+		bootDelayDefault = defaultBootDelay
+		extraOpts        []Option
+	)
+	if isNetworkAddr(addr) {
+		hostport := strings.TrimPrefix(addr, networkScheme)
+		t, err = openTCPTransport(hostport, draft.dialTimeout, draft.readTimeout, draft.keepalive)
+		// The MCU is already running — no bootloader reset to wait out,
+		// unlike opening a serial port (docs/17 "What changes and what
+		// doesn't").
+		bootDelayDefault = 0
+		extraOpts = append(extraOpts, withNetworkHeartbeat(draft.readTimeout/2))
+	} else {
+		t, err = openSerialTransport(addr)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("board: open %s: %w", addr, err)
+	}
+
+	// bootDelayDefault first so an explicit WithBootDelay in opts (applied
+	// next) still wins; extraOpts/withPortPath after opts since callers
+	// never set those themselves.
+	allOpts := make([]Option, 0, len(opts)+3)
+	allOpts = append(allOpts, WithBootDelay(bootDelayDefault))
+	allOpts = append(allOpts, opts...)
+	allOpts = append(allOpts, extraOpts...)
+	allOpts = append(allOpts, withPortPath(addr))
+
+	s, err := newSession(t, allOpts...)
 	if err != nil {
 		_ = t.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// withNetworkHeartbeat marks the Session as network-backed and sets its
+// heartbeat interval, per docs/17-network-boards.md's "Liveness" point 4.
+// Internal-only: applied by Open for a tcp:// address; tests inject it
+// directly (over a fake net.Conn/net.Pipe transport) to exercise heartbeat
+// behavior deterministically without a real TCP round trip.
+func withNetworkHeartbeat(interval time.Duration) Option {
+	return func(s *Session) {
+		s.isNetwork = true
+		s.heartbeatInterval = interval
+	}
 }
 
 // withPortPath records portPath on the Session for logging (see
@@ -111,6 +199,13 @@ const (
 	// one is handled: a booting board emits a version report and a firmware
 	// report back to back, and both mean the same single reboot.
 	rebootCooldown = 500 * time.Millisecond
+
+	// defaultDialTimeout/defaultReadTimeout/defaultKeepalive match
+	// docs/17-network-boards.md's documented network: config defaults.
+	// Only consulted for a tcp:// address.
+	defaultDialTimeout = 5 * time.Second
+	defaultReadTimeout = 10 * time.Second
+	defaultKeepalive   = 15 * time.Second
 )
 
 // newSession builds a Session over an already-open Transport. It is
@@ -139,7 +234,11 @@ func newSession(t Transport, opts ...Option) (*Session, error) {
 		return nil, err
 	}
 
+	s.lastActivity.Store(time.Now().UnixNano())
 	go s.readLoop()
+	if s.isNetwork && s.heartbeatInterval > 0 {
+		go s.heartbeatLoop()
+	}
 	return s, nil
 }
 
@@ -313,6 +412,7 @@ func (s *Session) readLoop() {
 		if n == 0 {
 			continue
 		}
+		s.lastActivity.Store(time.Now().UnixNano())
 		msg, err := parser.Feed(buf[0])
 		if err != nil {
 			continue // malformed frame: discard, resync
@@ -321,6 +421,43 @@ func (s *Session) readLoop() {
 			continue
 		}
 		s.applyMessage(msg)
+	}
+}
+
+// heartbeatLoop is only started for a network Session (isNetwork, see
+// withNetworkHeartbeat). docs/17-network-boards.md "Liveness": a network
+// board with nothing to report (e.g. no analog input enabled) would
+// otherwise trip the read deadline despite being perfectly healthy, since
+// unlike a serial link there's no OS-level signal that the peer is still
+// there. Once per heartbeatInterval (readTimeout/2), unless a read landed
+// very recently — within half of heartbeatInterval, i.e. the board is
+// already chatty enough that another probe would be pure noise — send a
+// Report Version query. This is deliberately a short "recently" window,
+// not the full heartbeatInterval: gating on the full interval would let a
+// send/reply/skip/send cadence settle at once per heartbeatInterval*2 (one
+// full readTimeout), leaving only a hair's-width margin before the read
+// deadline itself expires. The short window still skips a heartbeat when
+// it's genuinely redundant (a board mid-burst of analog reports) while
+// keeping the steady-state cadence close to every heartbeatInterval on a
+// quiet-but-alive board — comfortably inside readTimeout.
+func (s *Session) heartbeatLoop() {
+	ticker := time.NewTicker(s.heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+			if time.Since(time.Unix(0, s.lastActivity.Load())) < s.heartbeatInterval/2 {
+				continue // board has spoken very recently; no need to prod it
+			}
+			s.mu.Lock()
+			s.heartbeatAwaiting = true
+			s.mu.Unlock()
+			if err := s.write(EncodeReportVersionQuery()); err != nil {
+				return // session is dead (write marks it so); readLoop will exit too
+			}
+		}
 	}
 }
 
@@ -336,15 +473,38 @@ func (s *Session) applyMessage(msg Message) {
 	case AnalogValueMsg:
 		s.analog[m.Channel] = m.Value
 		s.mu.Unlock()
-	case ProtocolVersionMsg, FirmwareMsg:
-		// StandardFirmata sends these unprompted, exactly once, right
-		// after boot. Seeing either one again after handshakeDone is set
-		// means the board rebooted mid-session (brownout, another
-		// process toggling DTR, the reset button) — the MCU has forgotten
-		// every pin mode, reporting subscription, and sampling interval
-		// it had. The transport itself is fine (no read/write error), so
-		// this is the only signal we get; see docs/05-serial-protocol.md
-		// "Mid-session board reset".
+	case ProtocolVersionMsg:
+		// A network Session's heartbeat sends this exact query
+		// (EncodeReportVersionQuery) as a solicited liveness probe (see
+		// heartbeatLoop, docs/17-network-boards.md "Liveness"); its reply
+		// is indistinguishable on the wire from StandardFirmata's
+		// unsolicited boot-time report, so heartbeatAwaiting is the only
+		// way to tell them apart. Consuming it here — rather than
+		// unconditionally treating every post-handshake version message
+		// as a reboot — is what stops the heartbeat from tripping
+		// mid-session-reboot detection on a board that never rebooted.
+		if s.heartbeatAwaiting {
+			s.heartbeatAwaiting = false
+			s.mu.Unlock()
+			return
+		}
+		reboot := s.handshakeDone
+		s.mu.Unlock()
+		if reboot {
+			s.triggerReboot()
+		}
+	case FirmwareMsg:
+		// StandardFirmata sends this unprompted, exactly once, right
+		// after boot (paired with the version report above). Seeing it
+		// again after handshakeDone is set means the board rebooted
+		// mid-session (brownout, another process toggling DTR, the reset
+		// button) — the MCU has forgotten every pin mode, reporting
+		// subscription, and sampling interval it had. The transport
+		// itself is fine (no read/write error), so this is the only
+		// signal we get; see docs/05-serial-protocol.md "Mid-session
+		// board reset". pinctl's own heartbeat never asks for firmware,
+		// so unlike ProtocolVersionMsg above, every FirmwareMsg seen here
+		// is genuinely unsolicited.
 		reboot := s.handshakeDone
 		s.mu.Unlock()
 		if reboot {

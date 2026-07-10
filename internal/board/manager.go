@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,9 +84,11 @@ type realClock struct{}
 
 func (realClock) Now() time.Time { return time.Now() }
 
-// SessionOpener opens a Session against portPath. Production defaults to
-// Open; tests inject a fake that never touches a real serial port.
-type SessionOpener func(portPath string) (*Session, error)
+// SessionOpener opens a Session against addr — a serial port path or a
+// tcp://host:port network address (see board.Open). Production defaults to
+// a closure wrapping Open with the manager's network timeouts; tests
+// inject a fake that never touches a real serial port or socket.
+type SessionOpener func(addr string) (*Session, error)
 
 // ManagerConfig configures a Manager. Zero-value fields fall back to
 // production defaults.
@@ -94,6 +97,23 @@ type ManagerConfig struct {
 	// permitted to open (docs/14-deployment.md serial.allowlist,
 	// FR-BOARD-4). Empty means "allow any".
 	Allowlist []string
+
+	// NetworkBoards is the set of explicitly configured network board
+	// addresses (docs/17-network-boards.md's network.boards config,
+	// "tcp://host:port"). These are never matched against Allowlist — an
+	// address the operator explicitly typed into config.yaml is
+	// allowlisted by definition, the same way a network address has no
+	// equivalent of "any port" discovery to restrict in the first place.
+	// Empty means no network boards: no dialling, no goroutine (Scan's
+	// existing periodic loop simply has nothing to add).
+	NetworkBoards []string
+
+	// NetworkDialTimeout/NetworkReadTimeout/NetworkKeepalive configure
+	// every network board's connection (docs/17-network-boards.md
+	// "Configuration"). Zero-value fields default to 5s/10s/15s.
+	NetworkDialTimeout time.Duration
+	NetworkReadTimeout time.Duration
+	NetworkKeepalive   time.Duration
 
 	Store Store
 
@@ -165,8 +185,23 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if cfg.PortLister == nil {
 		cfg.PortLister = DefaultPortLister
 	}
+	if cfg.NetworkDialTimeout <= 0 {
+		cfg.NetworkDialTimeout = defaultDialTimeout
+	}
+	if cfg.NetworkReadTimeout <= 0 {
+		cfg.NetworkReadTimeout = defaultReadTimeout
+	}
+	if cfg.NetworkKeepalive <= 0 {
+		cfg.NetworkKeepalive = defaultKeepalive
+	}
 	if cfg.OpenSession == nil {
-		cfg.OpenSession = func(port string) (*Session, error) { return Open(port) }
+		dialTimeout, readTimeout, keepalive := cfg.NetworkDialTimeout, cfg.NetworkReadTimeout, cfg.NetworkKeepalive
+		cfg.OpenSession = func(addr string) (*Session, error) {
+			// These network-only options are harmless no-ops for a
+			// serial address (Open only consults them when addr's
+			// scheme is tcp://) — one opener for both kinds of board.
+			return Open(addr, WithDialTimeout(dialTimeout), WithReadTimeout(readTimeout), WithKeepalive(keepalive))
+		}
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = realClock{}
@@ -323,6 +358,16 @@ func (m *Manager) Scan(ctx context.Context) error {
 		}
 		discovered[identityForPort(p)] = p
 	}
+	// Network boards are never run through MatchesAllowlist: there is no
+	// discovery to restrict for them (docs/17-network-boards.md — pinctl
+	// only ever dials an address the operator explicitly configured, it
+	// never scans), so listing an address in network.boards is the
+	// allowlisting. Recomputed every Scan from static config, not from any
+	// enumeration, so an empty NetworkBoards adds nothing here and nothing
+	// downstream ever notices network boards exist.
+	for _, addr := range m.cfg.NetworkBoards {
+		discovered[identityForNetwork(addr)] = PortInfo{Path: addr}
+	}
 
 	m.mu.Lock()
 
@@ -357,6 +402,12 @@ func (m *Manager) Scan(ctx context.Context) error {
 			continue
 		}
 		name := fmt.Sprintf("Arduino on %s", p.Path)
+		if id.Kind == "network" {
+			// Strip the scheme for the display name (docs/17's example:
+			// "Board at esp32-porch.local:3030") — identity.key keeps it,
+			// since that's the exact string re-dialled and re-matched.
+			name = fmt.Sprintf("Board at %s", strings.TrimPrefix(p.Path, networkScheme))
+		}
 		b, err := m.cfg.Store.CreateBoard(model.Board{Name: name, Identity: id, PortHint: p.Path})
 		if err != nil {
 			log.Printf("board: registering new board on %s: %v", p.Path, err)

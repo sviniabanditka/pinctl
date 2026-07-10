@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,9 +25,13 @@ type Config struct {
 	// (docs/09-data-model.md), FR-PERSIST-1.
 	DataDir string       `yaml:"data_dir"`
 	Serial  SerialConfig `yaml:"serial"`
-	Log     LogConfig    `yaml:"log"`
-	MQTT    MQTT         `yaml:"mqtt"`
-	History History      `yaml:"history"`
+	// Network is config.yaml's network: section (docs/17-network-boards.md
+	// "Configuration") — explicitly configured Firmata-over-TCP board
+	// addresses. Absent/empty Boards means no network boards at all.
+	Network Network   `yaml:"network"`
+	Log     LogConfig `yaml:"log"`
+	MQTT    MQTT      `yaml:"mqtt"`
+	History History   `yaml:"history"`
 }
 
 // HTTPConfig is config.yaml's http: section.
@@ -148,6 +153,72 @@ func (m MQTT) validate() error {
 	return nil
 }
 
+// Network is config.yaml's network: section (docs/17-network-boards.md
+// "Configuration"). An empty/absent Boards list means no network boards,
+// no dialling, no goroutine — the same "disabled means absent" shape as
+// MQTT/History.
+type Network struct {
+	// Boards is the set of explicitly configured Firmata-over-TCP
+	// addresses, each "tcp://host:port" (docs/17's "Addresses"). There is
+	// no discovery/scanning: only addresses listed here are ever dialled.
+	Boards []string `yaml:"boards"`
+	// DialTimeout bounds establishing the TCP connection. Default 5s.
+	DialTimeout Duration `yaml:"dial_timeout"`
+	// ReadTimeout is the read deadline refreshed on every successful read;
+	// a board silent for this long is treated as gone (docs/17
+	// "Liveness"). Default 10s.
+	ReadTimeout Duration `yaml:"read_timeout"`
+	// Keepalive is the TCP keepalive idle period. Default 15s.
+	Keepalive Duration `yaml:"keepalive"`
+}
+
+// validate checks Network's fields: every address must parse as
+// tcp://host:port with a non-empty host and a valid port, and every
+// timeout must be positive — read_timeout additionally must be at least
+// 1s (docs/17-network-boards.md "Configuration"). read_timeout > dial_timeout
+// is not required.
+func (n Network) validate() error {
+	if time.Duration(n.DialTimeout) <= 0 {
+		return fmt.Errorf("config: network: dial_timeout must be > 0")
+	}
+	if time.Duration(n.ReadTimeout) < time.Second {
+		return fmt.Errorf("config: network: read_timeout must be >= 1s")
+	}
+	if time.Duration(n.Keepalive) <= 0 {
+		return fmt.Errorf("config: network: keepalive must be > 0")
+	}
+	for _, addr := range n.Boards {
+		if err := validateNetworkAddr(addr); err != nil {
+			return fmt.Errorf("config: network: boards: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateNetworkAddr checks addr parses as tcp://host:port with a
+// non-empty host and a valid (1-65535) port.
+func validateNetworkAddr(addr string) error {
+	u, err := url.Parse(addr)
+	if err != nil {
+		return fmt.Errorf("%q: %w", addr, err)
+	}
+	if u.Scheme != "tcp" {
+		return fmt.Errorf("%q: scheme must be tcp:// (got %q)", addr, u.Scheme)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("%q: missing host", addr)
+	}
+	portStr := u.Port()
+	if portStr == "" {
+		return fmt.Errorf("%q: missing port", addr)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("%q: invalid port %q", addr, portStr)
+	}
+	return nil
+}
+
 // History is config.yaml's history: section (docs/16-history.md
 // "Configuration"). History is on by default: enabled false is what
 // operators set to keep an SD card completely untouched by pinctl's own
@@ -237,6 +308,7 @@ func Default() Config {
 		HTTP:    HTTPConfig{Addr: ":8080"},
 		DataDir: defaultDataDir(),
 		Serial:  SerialConfig{Baud: 57600},
+		Network: defaultNetwork(),
 		Log:     LogConfig{Level: "info", Format: "text"},
 		MQTT:    defaultMQTT(),
 		History: defaultHistory(),
@@ -252,6 +324,16 @@ func defaultHistory() History {
 		MinInterval:   Duration(5 * time.Second),
 		MaxInterval:   Duration(5 * time.Minute),
 		FlushInterval: Duration(5 * time.Second),
+	}
+}
+
+// defaultNetwork returns docs/17-network-boards.md's documented network:
+// defaults (an empty Boards list — no network boards unless configured).
+func defaultNetwork() Network {
+	return Network{
+		DialTimeout: Duration(5 * time.Second),
+		ReadTimeout: Duration(10 * time.Second),
+		Keepalive:   Duration(15 * time.Second),
 	}
 }
 
@@ -350,6 +432,9 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	if err := cfg.History.validate(); err != nil {
+		return Config{}, err
+	}
+	if err := cfg.Network.validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

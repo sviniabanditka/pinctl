@@ -26,3 +26,26 @@ func WithHandshakeTimeout(d time.Duration) Option {
 func WithSamplingIntervalMS(ms int) Option {
 	return func(s *Session) { s.samplingIntervalMS = ms }
 }
+
+// WithDialTimeout overrides how long Open waits to establish a TCP
+// connection for a network board address (tcp://host:port). No effect on
+// a serial address. Default 5s, matching docs/17-network-boards.md's
+// network.dial_timeout.
+func WithDialTimeout(d time.Duration) Option {
+	return func(s *Session) { s.dialTimeout = d }
+}
+
+// WithReadTimeout overrides the read deadline refreshed on every
+// successful read from a network board's socket (docs/17-network-boards.md
+// "Liveness": a board silent for this long is treated as gone). No effect
+// on a serial address. Default 10s. Also determines the heartbeat interval
+// (readTimeout/2, see docs/17's heartbeat paragraph).
+func WithReadTimeout(d time.Duration) Option {
+	return func(s *Session) { s.readTimeout = d }
+}
+
+// WithKeepalive overrides the TCP keepalive idle period set on a network
+// board's connection. No effect on a serial address. Default 15s.
+func WithKeepalive(d time.Duration) Option {
+	return func(s *Session) { s.keepalive = d }
+}

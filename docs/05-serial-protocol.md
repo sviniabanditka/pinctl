@@ -134,6 +134,16 @@ Firmata's own default range (or not attached at all).
 | Go library | [`go.bug.st/serial`](https://pkg.go.dev/go.bug.st/serial) |
 | Port ownership | Exactly one goroutine per open port (see [03-architecture.md](03-architecture.md#concurrency-model)); all reads/writes go through that goroutine's channels, never called directly from other goroutines |
 
+The same Firmata subset described in this document also runs over a plain
+TCP socket instead of a serial port — a `net.Conn` satisfies `Transport`
+exactly as a serial port does, so the handshake, capability discovery, and
+every message in the table above are unchanged. What differs is
+transport-specific: the boot delay above and the DTR-triggered reset it
+waits out are serial-only concerns (a network board's MCU is already
+running, so `Open` skips the delay entirely), and a socket needs its own
+liveness story since it can't fail a read the way an unplugged serial port
+does. See [17-network-boards.md](17-network-boards.md) for both.
+
 `go.bug.st/serial` is used purely as a byte pipe — opening the port, setting
 baud/framing, and blocking reads/writes. The Firmata message framing itself
 (distinguishing multi-byte messages, buffering partial reads, sysex

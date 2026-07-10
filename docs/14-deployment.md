@@ -132,6 +132,23 @@ serial:
   # firmware that was itself configured for a non-default baud rate.
   baud: 57600
 
+# Explicitly configured Firmata-over-TCP boards (StandardFirmataWiFi) — see
+# 17-network-boards.md for the full picture (addresses, identity, the three
+# liveness mechanisms, firmware). Empty/absent means no network boards, no
+# dialling, no goroutine; serial discovery above is unaffected either way.
+network:
+  boards:
+    - tcp://esp32-porch.local:3030
+  dial_timeout: 5s
+  read_timeout: 10s # a board silent this long is treated as gone
+  keepalive: 15s
+
+  # Security: Firmata over TCP is unauthenticated and unencrypted — anyone
+  # who can reach the port can drive every pin. Put network boards on a
+  # VLAN/IoT SSID that can't reach the internet or be reached by untrusted
+  # devices, and firewall the port to only the Pi's address; there is no
+  # pinctl setting that changes this. See 17-network-boards.md#security.
+
 log:
   # debug | info | warn | error. debug is per-tick node evaluation detail
   # (see 06-runtime.md) — very high volume, only turn on while actively
