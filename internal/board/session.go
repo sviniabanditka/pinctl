@@ -56,18 +56,38 @@ type Session struct {
 	readTimeout time.Duration
 	keepalive   time.Duration
 
-	// isNetwork/heartbeatInterval drive the network heartbeat
-	// (docs/17-network-boards.md "Liveness", point 4): only a network
-	// transport needs prodding to keep the read deadline from tripping on
-	// a quiet-but-alive board. heartbeatInterval is readTimeout/2, set by
-	// Open for a tcp:// address.
+	// isNetwork/heartbeatInterval/silenceTimeout drive the liveness
+	// watchdog (heartbeatLoop) shared by every transport, per
+	// docs/05-serial-protocol.md and docs/17-network-boards.md's
+	// "Liveness" sections:
+	//
+	//   - A network Session (isNetwork true) relies on its read deadline
+	//     (openTCPTransport) to actually detect a dead board — a timed-out
+	//     Read surfaces as an ordinary error, which readLoop turns into
+	//     markDead the usual way. heartbeatInterval (readTimeout/2, set by
+	//     Open for a tcp:// address) only exists so a quiet-but-alive
+	//     board doesn't trip that deadline.
+	//   - A serial Session has no such kernel-level signal: go.bug.st/
+	//     serial's Read blocks forever on a hung board, it never errors.
+	//     So a serial Session additionally sets silenceTimeout
+	//     (heartbeatInterval = silenceTimeout/2, see withSerialWatchdog),
+	//     and heartbeatLoop itself calls markDead directly once silence
+	//     reaches a full silenceTimeout with a heartbeat outstanding and
+	//     unanswered — there's no read error to wait for.
+	//
+	// heartbeatInterval == 0 means the watchdog doesn't run at all (no
+	// goroutine started): never true for a network Session (heartbeatInterval
+	// always follows a positive readTimeout), but the documented way a
+	// serial Session's watchdog is disabled (silence_timeout: 0).
 	isNetwork         bool
 	heartbeatInterval time.Duration
+	silenceTimeout    time.Duration
 
 	// lastActivity is the Unix-nanosecond timestamp of the most recent
 	// successful transport Read, updated from the read loop only.
 	// heartbeatLoop reads it (atomically, no s.mu) to decide whether the
-	// board has been quiet long enough to need prodding.
+	// board has been quiet long enough to need prodding, or (serial only)
+	// long enough to be declared dead.
 	lastActivity atomic.Int64
 
 	writeMu sync.Mutex // serializes writes onto the transport
@@ -122,9 +142,10 @@ func Open(addr string, opts ...Option) (*Session, error) {
 	// harmless and keeps newSession the single place that builds a
 	// Session's zero value.
 	draft := &Session{
-		dialTimeout: defaultDialTimeout,
-		readTimeout: defaultReadTimeout,
-		keepalive:   defaultKeepalive,
+		dialTimeout:    defaultDialTimeout,
+		readTimeout:    defaultReadTimeout,
+		keepalive:      defaultKeepalive,
+		silenceTimeout: defaultSilenceTimeout,
 	}
 	for _, opt := range opts {
 		opt(draft)
@@ -146,6 +167,7 @@ func Open(addr string, opts ...Option) (*Session, error) {
 		extraOpts = append(extraOpts, withNetworkHeartbeat(draft.readTimeout/2))
 	} else {
 		t, err = openSerialTransport(addr)
+		extraOpts = append(extraOpts, serialWatchdogOpts(draft.silenceTimeout)...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("board: open %s: %w", addr, err)
@@ -180,6 +202,36 @@ func withNetworkHeartbeat(interval time.Duration) Option {
 	}
 }
 
+// withSerialWatchdog sets a serial Session's silence watchdog (see the
+// Session.isNetwork/heartbeatInterval/silenceTimeout doc comment and
+// docs/05-serial-protocol.md's "Liveness" section): heartbeatInterval is
+// derived here (silenceTimeout/2), not left to WithSilenceTimeout, so a
+// caller only has to reason about the one documented knob
+// (serial.silence_timeout) and not about heartbeat cadence separately.
+// Internal-only: applied by Open for a non-tcp:// address, after any
+// caller-supplied WithSilenceTimeout has already set draft.silenceTimeout;
+// tests inject it directly (over a fake Transport) to exercise watchdog
+// behavior deterministically without a real serial port.
+func withSerialWatchdog(silenceTimeout time.Duration) Option {
+	return func(s *Session) {
+		s.silenceTimeout = silenceTimeout
+		s.heartbeatInterval = silenceTimeout / 2
+	}
+}
+
+// serialWatchdogOpts returns the extra Option(s) Open applies for a serial
+// address's silence watchdog: withSerialWatchdog(silenceTimeout) if
+// silenceTimeout is positive, or no options at all if it's <= 0 — the
+// documented "silence_timeout: 0 disables the watchdog"
+// (docs/05-serial-protocol.md "Liveness"). Factored out of Open so this
+// decision is unit-testable without a real serial port.
+func serialWatchdogOpts(silenceTimeout time.Duration) []Option {
+	if silenceTimeout <= 0 {
+		return nil
+	}
+	return []Option{withSerialWatchdog(silenceTimeout)}
+}
+
 // withPortPath records portPath on the Session for logging (see
 // Session.portPath's doc comment). Internal-only: applied by Open, after
 // any caller-supplied opts, before the read loop starts.
@@ -206,6 +258,11 @@ const (
 	defaultDialTimeout = 5 * time.Second
 	defaultReadTimeout = 10 * time.Second
 	defaultKeepalive   = 15 * time.Second
+
+	// defaultSilenceTimeout matches docs/05-serial-protocol.md's documented
+	// serial.silence_timeout default. Only consulted for a non-tcp://
+	// address (see withSerialWatchdog).
+	defaultSilenceTimeout = 10 * time.Second
 )
 
 // newSession builds a Session over an already-open Transport. It is
@@ -236,7 +293,11 @@ func newSession(t Transport, opts ...Option) (*Session, error) {
 
 	s.lastActivity.Store(time.Now().UnixNano())
 	go s.readLoop()
-	if s.isNetwork && s.heartbeatInterval > 0 {
+	// heartbeatInterval > 0 covers both a network Session (always positive,
+	// following readTimeout) and a serial Session with a configured
+	// silence_timeout (see withSerialWatchdog) — one watchdog goroutine
+	// shared by every transport, not one path per transport kind.
+	if s.heartbeatInterval > 0 {
 		go s.heartbeatLoop()
 	}
 	return s, nil
@@ -424,22 +485,46 @@ func (s *Session) readLoop() {
 	}
 }
 
-// heartbeatLoop is only started for a network Session (isNetwork, see
-// withNetworkHeartbeat). docs/17-network-boards.md "Liveness": a network
-// board with nothing to report (e.g. no analog input enabled) would
-// otherwise trip the read deadline despite being perfectly healthy, since
-// unlike a serial link there's no OS-level signal that the peer is still
-// there. Once per heartbeatInterval (readTimeout/2), unless a read landed
-// very recently — within half of heartbeatInterval, i.e. the board is
-// already chatty enough that another probe would be pure noise — send a
-// Report Version query. This is deliberately a short "recently" window,
-// not the full heartbeatInterval: gating on the full interval would let a
-// send/reply/skip/send cadence settle at once per heartbeatInterval*2 (one
-// full readTimeout), leaving only a hair's-width margin before the read
-// deadline itself expires. The short window still skips a heartbeat when
-// it's genuinely redundant (a board mid-burst of analog reports) while
-// keeping the steady-state cadence close to every heartbeatInterval on a
-// quiet-but-alive board — comfortably inside readTimeout.
+// heartbeatLoop is the liveness watchdog shared by every transport whose
+// Session has a positive heartbeatInterval — a network Session
+// (withNetworkHeartbeat) or a serial Session with a configured
+// silence_timeout (withSerialWatchdog). Both cases exist for the same
+// underlying reason, documented in docs/17-network-boards.md "Liveness" and
+// docs/05-serial-protocol.md "Liveness": a board with nothing to report
+// (e.g. no analog input enabled) would otherwise be indistinguishable from
+// one that's hung. Once per heartbeatInterval, unless a read landed very
+// recently — within half of heartbeatInterval, i.e. the board is already
+// chatty enough that another probe would be pure noise — this sends a
+// Report Version query (a request the board must answer, costing two
+// bytes). This is deliberately a short "recently" window, not the full
+// heartbeatInterval: gating on the full interval would let a
+// send/reply/skip/send cadence settle at once per heartbeatInterval*2,
+// leaving only a hair's-width margin before a network Session's read
+// deadline (or a serial Session's silenceTimeout, below) itself expires.
+//
+// What differs between the two transports is who acts on silence:
+//
+//   - A network Session's read deadline (openTCPTransport) is what
+//     actually detects a dead board: a timed-out Read surfaces as an
+//     ordinary error, and readLoop's existing markDead handles it. This
+//     loop's only job there is to keep that deadline from tripping on a
+//     quiet-but-alive board.
+//   - A serial Session has no such kernel-level signal — go.bug.st/
+//     serial's Read blocks forever on a hung board; it never errors. So
+//     for a serial Session (silenceTimeout > 0) this loop also does the
+//     killing: once silence has reached a full silenceTimeout with a
+//     heartbeat already sent and still unanswered (heartbeatAwaiting),
+//     the board is gone, and markDead is called directly — there is no
+//     read error to wait for on that transport. The Manager's existing
+//     reconnect path then closes the port, which deasserts DTR and resets
+//     an Uno: for the brownout failure this watchdog exists to catch, that
+//     reset is the cure, not just bookkeeping (see docs/05's "Liveness").
+//
+// heartbeatAwaiting also gates re-sending: once a heartbeat is
+// outstanding, this loop waits for it to either be answered (applyMessage
+// clears the flag on the matching ProtocolVersionMsg — see its doc
+// comment) or for the kill condition above to fire, rather than sending a
+// second query on top of the first.
 func (s *Session) heartbeatLoop() {
 	ticker := time.NewTicker(s.heartbeatInterval)
 	defer ticker.Stop()
@@ -448,8 +533,19 @@ func (s *Session) heartbeatLoop() {
 		case <-s.done:
 			return
 		case <-ticker.C:
-			if time.Since(time.Unix(0, s.lastActivity.Load())) < s.heartbeatInterval/2 {
-				continue // board has spoken very recently; no need to prod it
+			silence := time.Since(time.Unix(0, s.lastActivity.Load()))
+
+			s.mu.Lock()
+			awaiting := s.heartbeatAwaiting
+			s.mu.Unlock()
+
+			if s.silenceTimeout > 0 && awaiting && silence >= s.silenceTimeout {
+				s.markDead(fmt.Errorf("board: no data for %s; board is unresponsive", s.silenceTimeout))
+				return
+			}
+
+			if awaiting || silence < s.heartbeatInterval/2 {
+				continue // already waiting on a reply, or the board has spoken very recently
 			}
 			s.mu.Lock()
 			s.heartbeatAwaiting = true

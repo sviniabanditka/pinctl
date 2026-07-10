@@ -4,12 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sviniabanditka/pinctl/internal/model"
 )
+
+// funcWriter adapts a plain function to io.Writer, used below to capture
+// log.Printf output without a real file/buffer dance.
+type funcWriter func([]byte) (int, error)
+
+func (f funcWriter) Write(p []byte) (int, error) { return f(p) }
 
 // --- fake BoardStore --------------------------------------------------------
 
@@ -631,6 +638,118 @@ func TestManagerRebootRefiresOnReady(t *testing.T) {
 	info := waitForBoardStatus(t, m, id, StatusConnected)
 	if info.Status != StatusConnected {
 		t.Errorf("status after reboot = %v, want %v", info.Status, StatusConnected)
+	}
+}
+
+// TestManagerRebootGuardTripsAfterFourReboots drives Manager.handleReboot
+// directly — bypassing Session.triggerReboot's own ~500ms single-flight
+// cooldown, so this needs no real sleeps at all — to verify the
+// reboot-loop guard (docs/05-serial-protocol.md "Liveness"): more than 3
+// reboot signals within the 30s window must stop reapplying configuration
+// (no further OnReady) and mark the board StatusError, logging exactly
+// once rather than once per loop.
+func TestManagerRebootGuardTripsAfterFourReboots(t *testing.T) {
+	fs := newFakeBoardStore()
+	pl := &fakePortLister{}
+	pl.set(PortInfo{Path: "/dev/ttyACM0", IsUSB: true, VID: "2341", PID: "0043", SerialNumber: "SN1"})
+	opener := &scriptedOpener{t: t, fail: map[string]error{}}
+	clk := newFakeClock()
+
+	var mu sync.Mutex
+	var onReadyCalls int
+	m := NewManager(ManagerConfig{
+		Allowlist:   []string{"*"}, // tests discover whatever the fake PortLister returns
+		Store:       fs,
+		PortLister:  pl.list,
+		OpenSession: opener.open,
+		Clock:       clk,
+		OnReady: func(boardID string, sess *Session) {
+			mu.Lock()
+			onReadyCalls++
+			mu.Unlock()
+		},
+	})
+
+	if err := m.Scan(context.Background()); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	id := m.Boards()[0].ID
+	waitForBoardStatus(t, m, id, StatusConnected)
+
+	mu.Lock()
+	afterConnect := onReadyCalls
+	mu.Unlock()
+	if afterConnect != 1 {
+		t.Fatalf("onReadyCalls after initial connect = %d, want 1", afterConnect)
+	}
+
+	m.mu.RLock()
+	st := m.boards[id]
+	sess := st.session
+	m.mu.RUnlock()
+
+	var logMu sync.Mutex
+	var logLines []string
+	origOutput := log.Writer()
+	origFlags := log.Flags()
+	log.SetOutput(funcWriter(func(p []byte) (int, error) {
+		logMu.Lock()
+		logLines = append(logLines, string(p))
+		logMu.Unlock()
+		return len(p), nil
+	}))
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(origOutput)
+		log.SetFlags(origFlags)
+	})
+
+	// Four reboot signals, all landing well inside the 30s window (the fake
+	// clock never advances here, so they're all simultaneous by the guard's
+	// clock) — the fourth must trip it.
+	for i := 0; i < 4; i++ {
+		m.handleReboot(st, sess, id)
+	}
+
+	info := waitForBoardStatus(t, m, id, StatusError)
+	if info.LastError == nil {
+		t.Error("LastError = nil after reboot-loop guard tripped, want a descriptive error naming the likely cause")
+	}
+
+	mu.Lock()
+	finalCalls := onReadyCalls
+	mu.Unlock()
+	// 1 initial connect + 3 reboots under the threshold; the 4th reboot
+	// signal must not call OnReady a 4th time.
+	if finalCalls != 4 {
+		t.Errorf("onReadyCalls = %d, want 4 (initial connect + 3 reboots below the threshold only)", finalCalls)
+	}
+
+	logMu.Lock()
+	n := len(logLines)
+	logMu.Unlock()
+	if n != 1 {
+		t.Errorf("reboot-loop guard logged %d lines, want exactly 1: %v", n, logLines)
+	}
+
+	// A further reboot signal against the now-tripped board must neither
+	// log again nor call OnReady again — handleReboot's own
+	// current-session check already short-circuits once the guard has
+	// dropped the session.
+	m.handleReboot(st, sess, id)
+
+	mu.Lock()
+	callsAfterFifth := onReadyCalls
+	mu.Unlock()
+	if callsAfterFifth != finalCalls {
+		t.Errorf("OnReady called again after the reboot-loop guard tripped: %d, want still %d", callsAfterFifth, finalCalls)
+	}
+
+	logMu.Lock()
+	n2 := len(logLines)
+	logMu.Unlock()
+	if n2 != 1 {
+		t.Errorf("reboot-loop guard logged again after already tripped: %d lines, want still 1", n2)
 	}
 }
 

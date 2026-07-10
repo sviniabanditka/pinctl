@@ -26,6 +26,20 @@ var ErrBoardOffline = errors.New("board: board is offline")
 // (not in the persisted boards collection and never discovered).
 var ErrBoardUnknown = errors.New("board: unknown board id")
 
+// rebootGuardWindow/rebootGuardThreshold define the reboot-loop guard: a
+// board that reboots more than rebootGuardThreshold times within
+// rebootGuardWindow is almost certainly caught in a brownout loop — a
+// device on the board (a servo, a relay) draws more current than the USB
+// rail can supply, the reboot resets it, reconfiguring the board
+// re-energises the very same device, and it browns the board out again.
+// Reapplying configuration is what sustains the loop, so past the
+// threshold Manager stops doing that and marks the board StatusError
+// instead — see connect()'s SetOnReboot wiring.
+const (
+	rebootGuardWindow    = 30 * time.Second
+	rebootGuardThreshold = 3
+)
+
 // Status is a board's live connection state, matching docs/10-api.md's
 // boards.status enum.
 type Status string
@@ -115,6 +129,18 @@ type ManagerConfig struct {
 	NetworkReadTimeout time.Duration
 	NetworkKeepalive   time.Duration
 
+	// SerialSilenceTimeout configures every serial board's silence
+	// watchdog (docs/05-serial-protocol.md "Liveness",
+	// board.WithSilenceTimeout). Unlike the Network* timeouts above, zero
+	// is a legitimate explicit value here (it disables the watchdog, per
+	// serial.silence_timeout's documented "0 disables" behavior) rather
+	// than "unset" — so, deliberately, NewManager does not substitute a
+	// default for it the way it does for the Network* fields. A caller
+	// that wants the documented 10s default must set it explicitly (as
+	// config.Load's resolved config.Config.Serial.SilenceTimeout already
+	// does for the production cmd/pinctl path).
+	SerialSilenceTimeout time.Duration
+
 	Store Store
 
 	// PortLister/OpenSession/Clock: injectable seams for tests. Default to
@@ -155,6 +181,16 @@ type boardState struct {
 	attempt     int
 	nextAttempt time.Time
 	lastErr     error
+
+	// rebootTimes holds the timestamps (per m.cfg.Clock) of this board's
+	// recent mid-session reboot signals, pruned to rebootGuardWindow on
+	// every signal — the reboot-loop guard's sliding window (see
+	// Manager.rebootGuardTrippedLocked).
+	rebootTimes []time.Time
+	// rebootGuardLogged is set the one time the reboot-loop guard trips
+	// for this board, so the loud log line fires once, not once per
+	// (suppressed) reboot signal.
+	rebootGuardLogged bool
 }
 
 // Manager owns every board's connection lifecycle. Safe for concurrent use.
@@ -196,11 +232,18 @@ func NewManager(cfg ManagerConfig) *Manager {
 	}
 	if cfg.OpenSession == nil {
 		dialTimeout, readTimeout, keepalive := cfg.NetworkDialTimeout, cfg.NetworkReadTimeout, cfg.NetworkKeepalive
+		silenceTimeout := cfg.SerialSilenceTimeout
 		cfg.OpenSession = func(addr string) (*Session, error) {
-			// These network-only options are harmless no-ops for a
-			// serial address (Open only consults them when addr's
-			// scheme is tcp://) — one opener for both kinds of board.
-			return Open(addr, WithDialTimeout(dialTimeout), WithReadTimeout(readTimeout), WithKeepalive(keepalive))
+			// Each of these options is a no-op for the other address
+			// kind (Open only consults dial/read/keepalive for tcp://
+			// and silence timeout for a non-tcp:// address) — one opener
+			// for both kinds of board.
+			return Open(addr,
+				WithDialTimeout(dialTimeout),
+				WithReadTimeout(readTimeout),
+				WithKeepalive(keepalive),
+				WithSilenceTimeout(silenceTimeout),
+			)
 		}
 	}
 	if cfg.Clock == nil {
@@ -467,6 +510,72 @@ func (m *Manager) hasIdentityLocked(id model.Identity) bool {
 	return false
 }
 
+// rebootGuardTrippedLocked records a reboot signal for st (per
+// m.cfg.Clock.Now()) and reports whether the reboot-loop guard has now
+// tripped: more than rebootGuardThreshold reboots within rebootGuardWindow.
+// Caller must hold m.mu.
+func (m *Manager) rebootGuardTrippedLocked(st *boardState) bool {
+	now := m.cfg.Clock.Now()
+	cutoff := now.Add(-rebootGuardWindow)
+	kept := st.rebootTimes[:0]
+	for _, t := range st.rebootTimes {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	st.rebootTimes = append(kept, now)
+	return len(st.rebootTimes) > rebootGuardThreshold
+}
+
+// handleReboot is what Session.SetOnReboot invokes (see connect()) whenever
+// sess detects st's board rebooted mid-session. It must be a no-op once the
+// manager is closed (or st's session has since been dropped/replaced) so a
+// reboot signal racing against a session Close() can never resurrect a
+// board Close already tore down.
+//
+// Otherwise it applies the reboot-loop guard (rebootGuardWindow/
+// rebootGuardThreshold): reapplying configuration on every reboot is
+// exactly what re-energises the device browning the board out in the first
+// place, so past the threshold this stops doing that — no more OnReady,
+// board marked StatusError, logged once — instead of retrying the same
+// brownout forever. Below the threshold, it re-runs OnReady exactly as a
+// fresh connect does (docs/05-serial-protocol.md "Mid-session board
+// reset").
+//
+// Factored out of connect()'s SetOnReboot closure so the guard logic is
+// callable directly from a test without needing to drive a real reboot
+// signal (and Session.triggerReboot's ~500ms single-flight cooldown)
+// through the wire.
+func (m *Manager) handleReboot(st *boardState, sess *Session, boardID string) {
+	m.mu.Lock()
+	closed := m.closed
+	current := st.session
+	if closed || current != sess {
+		m.mu.Unlock()
+		return
+	}
+
+	if m.rebootGuardTrippedLocked(st) {
+		n := len(st.rebootTimes)
+		st.permanent = true
+		st.lastErr = fmt.Errorf("board: rebooted %d times in %s; a device on the board (e.g. a servo or relay) is likely browning it out — stopping reconfiguration until the wiring is fixed", n, rebootGuardWindow)
+		alreadyLogged := st.rebootGuardLogged
+		st.rebootGuardLogged = true
+		dropped := m.transitionLocked(st, StatusError, "")
+		m.mu.Unlock()
+		closeDropped(dropped)
+		if !alreadyLogged {
+			log.Printf("board: %s: reboot loop detected (%d reboots in %s) — likely a device browning out the board (servo/relay drawing more than the USB rail can supply); marking error and no longer reconfiguring", boardID, n, rebootGuardWindow)
+		}
+		return
+	}
+	m.mu.Unlock()
+
+	if m.cfg.OnReady != nil {
+		m.cfg.OnReady(boardID, sess)
+	}
+}
+
 // connect attempts to open+handshake st's board on port, off the Scan hot
 // path. On success it runs OnReady before marking the board connected (see
 // ManagerConfig.OnReady's doc comment for the ordering guarantee this
@@ -547,18 +656,7 @@ func (m *Manager) connect(st *boardState, port string) {
 	// is closed (or this board's session has since been dropped/replaced)
 	// so a reboot signal from a session Close() is racing against can
 	// never resurrect it.
-	sess.SetOnReboot(func() {
-		m.mu.Lock()
-		closed := m.closed
-		current := st.session
-		m.mu.Unlock()
-		if closed || current != sess {
-			return
-		}
-		if m.cfg.OnReady != nil {
-			m.cfg.OnReady(boardID, sess)
-		}
-	})
+	sess.SetOnReboot(func() { m.handleReboot(st, sess, boardID) })
 
 	if m.cfg.OnReady != nil {
 		m.cfg.OnReady(boardID, sess)

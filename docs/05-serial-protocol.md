@@ -21,6 +21,7 @@ the overall system, and how `Session` is consumed by the engine, is covered in
 - [Analog reporting](#analog-reporting)
 - [Digital reporting](#digital-reporting)
 - [Error handling](#error-handling)
+- [Liveness](#liveness)
 - [Mid-session board reset](#mid-session-board-reset)
 - [Message sequence diagrams](#message-sequence-diagrams)
 - [Limits of Firmata and the v2 path](#limits-of-firmata-and-the-v2-path)
@@ -378,6 +379,105 @@ identity as a whole.
 | Board reset on serial open | DTR toggling on port open resets AVR-based Uno/Nano boards (a side effect of the bootloader's auto-reset design, not something pinctl triggers deliberately) | Session waits a fixed **boot delay (~2 s)** after opening the port before sending anything, so the bootloader has finished and StandardFirmata is running and ready to receive; the handshake's own read timeout is set comfortably longer than this delay |
 | Watchdog / health check | No traffic (report or successful write ack-equivalent) seen within a rolling window (e.g. 5× the sampling interval, minimum ~1 s) | Treated the same as a detected I/O error — proactively marks the session `offline` and starts reconnect, rather than waiting for the OS to notice a half-dead connection (a board that's hung but keeps the USB link up would otherwise never be detected) |
 | Write timeout | `DigitalWrite`/`PWMWrite` caller-supplied `ctx` expires before the write is flushed to the port | Return the `ctx` error to the caller (the engine tick treats it as a failed write for that node this tick, per [03-architecture.md](03-architecture.md#b-tick-execution)); does not, by itself, mark the board offline (a single slow write isn't proof of disconnection — the watchdog above is what escalates a *pattern* of no traffic) |
+
+## Liveness
+
+**A serial read on a hung board blocks forever. It never errors.** Unplugging
+a board fails a read promptly (see [Error handling](#error-handling) above),
+but a board that's still electrically present and still holding the USB link
+open — just not running StandardFirmata anymore, because its MCU is stuck
+mid-boot or wedged — never returns from `go.bug.st/serial`'s blocking `Read`.
+Nothing in the OS notices; there is no serial-level equivalent of a TCP
+socket's read deadline. Left undetected, this is indistinguishable from a
+board that's simply idle: `Session.Alive()` stays `true`, the pin-value cache
+freezes at its last-seen values, and writes queue onto a port that will never
+be read from again.
+
+This is the same failure [17-network-boards.md](17-network-boards.md)'s
+"Liveness" section solves for a TCP board, and it's solved the same way
+here — one shared mechanism (`Session.heartbeatLoop`), not a fork per
+transport:
+
+1. `Session` tracks the time of its last successful read (`lastActivity`),
+   updated by the read loop on every byte, regardless of message type.
+2. A **silence watchdog** runs for a serial `Session` (a network `Session`'s
+   read deadline already does this at the kernel level — see
+   [17-network-boards.md](17-network-boards.md)). If nothing has been read
+   for half of `serial.silence_timeout`, it sends
+   `EncodeReportVersionQuery()` — a Protocol Version query, the same
+   single-byte message the handshake uses, costing two bytes on the wire —
+   as a heartbeat. This is the exact request/reply pair a genuinely idle
+   board (no analog inputs enabled, no changing digital inputs — nothing to
+   report on its own) must still answer, distinguishing it from a hung one.
+3. If nothing has been read for the full `serial.silence_timeout` — a
+   heartbeat sent, no answer — the board is gone. `Session` calls `markDead`
+   directly with a clear error (`board: no data for 10s; board is
+   unresponsive`), the same terminal state a read/write I/O error produces.
+   There's no read error to wait for on a hung serial board, so this is the
+   only place that decision gets made.
+
+**The heartbeat's reply must not look like a reboot.** The same hazard
+[17-network-boards.md](17-network-boards.md) describes applies verbatim
+here, because it's the same code: the heartbeat's `0xF9` reply is, on the
+wire, indistinguishable from StandardFirmata's unsolicited boot-time report,
+and [mid-session reboot detection](#mid-session-board-reset) fires on
+exactly that message. `Session.heartbeatAwaiting` is set right before the
+heartbeat is sent and cleared by `applyMessage` when the matching
+`ProtocolVersionMsg` arrives, so that reply is swallowed rather than treated
+as a reboot. Get this wrong and a perfectly healthy, quiet board
+reconfigures itself every few seconds, forever.
+
+**Reconnecting is the cure, not just bookkeeping.** Once `markDead` fires,
+`board.Manager`'s existing reconnect path (see [Reconnect with
+backoff](#8-reconnect-with-backoff)) closes the port and redials. Closing a
+serial port most Uno/Nano boards are attached to toggles DTR and resets the
+MCU — the same auto-reset [Error handling](#error-handling) already documents
+for a fresh `Open`. For the failure this watchdog exists to catch (a board
+wedged mid-boot after a brownout, unable to finish initializing and so never
+speaking again on its own), that reset is exactly what's needed to bring it
+back — the reconnect isn't merely detecting the problem, closing the port is
+what un-wedges the MCU.
+
+**A legitimately idle board must not be killed.** A board with no analog
+inputs and no changing digital inputs reports nothing on its own; the
+heartbeat above is precisely what lets pinctl tell that apart from a hung
+board rather than guessing from silence alone.
+
+### Configuration
+
+```yaml
+serial:
+  silence_timeout: 10s # a board silent this long (heartbeat sent, unanswered) is unresponsive
+```
+
+`serial.silence_timeout` defaults to `10s`, minimum `2s` (below that, normal
+handshake/reconfiguration traffic could itself trip the watchdog). Setting it
+to `0` disables the watchdog entirely — documented for boards that
+legitimately never speak at all even when heartbeated (none in pinctl's
+supported set today, but the escape hatch exists) — at the direct cost that
+pinctl can no longer tell such a board apart from a dead one; a genuinely
+wedged board on that config would stay `connected` forever, exactly the
+failure this section exists to close. Reach for it only if a specific board
+demonstrably can't answer a Report Version query while otherwise healthy.
+
+### Reboot-loop guard
+
+A brownout can retrigger itself: a device on the board (typically a servo or
+relay powered from the board's own 5V rail) draws more current than the USB
+port can supply, the board resets, [mid-session reboot
+detection](#mid-session-board-reset) reapplies the board's configuration —
+which re-attaches the very same servo, drawing power again — and the board
+browns out a second time before it finishes booting. Reapplying configuration
+is what sustains the loop; retrying it forever only guarantees it never ends.
+
+If a board reboots more than 3 times within a 30-second window,
+`board.Manager` stops reapplying configuration for it: no further `OnReady`
+call, and the board is marked `error` with a message naming the likely
+cause (a device on the board browning it out — check for a servo or relay
+drawn straight from the board's 5V rail with no separate supply). This is
+logged once, loudly, not once per loop — a human has to fix the wiring, and
+pinctl's job at that point is to say so and stop making the brownout worse by
+re-energising the offending device on every reboot.
 
 ## Mid-session board reset
 

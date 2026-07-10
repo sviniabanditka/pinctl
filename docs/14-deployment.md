@@ -137,6 +137,15 @@ serial:
   # firmware that was itself configured for a non-default baud rate.
   baud: 57600
 
+  # How long a board may go silent before pinctl heartbeats it, and — if
+  # that heartbeat goes unanswered — declares it unresponsive and
+  # reconnects (which resets an Uno via DTR, the actual cure for a
+  # brownout-hung board). See 05-serial-protocol.md#liveness. Default 10s,
+  # minimum 2s; 0 disables the watchdog (only for boards that legitimately
+  # never speak at all — pinctl then cannot tell them apart from a dead
+  # one).
+  silence_timeout: 10s
+
 # Explicitly configured Firmata-over-TCP boards (StandardFirmataWiFi) — see
 # 17-network-boards.md for the full picture (addresses, identity, the three
 # liveness mechanisms, firmware). Empty/absent means no network boards, no
@@ -419,6 +428,7 @@ Log levels (set via `log.level`, see [Configuration](#configuration) and
 | Pipeline "enabled" but not running / no writes happening | Its board is offline (check board status via the API/UI — a paused pipeline due to an offline board is normal, not an error); or the pipeline has a validation error from a stale/deleted device reference. | Check board connectivity first. Check `journalctl -u pinctl -p warning` for "pipeline paused" or "definition skipped" lines. Re-save the pipeline in the editor to surface any inline validation errors. |
 | UI unreachable in browser | Wrong `http.addr` (bound to a specific interface, not `:8080`); firewall blocking the port; service not actually running. | `sudo systemctl status pinctl` to confirm it's active. `curl -v http://localhost:8080/` from the Pi itself to isolate network vs. process issues. Check `http.addr` in `config.yaml` matches how you're reaching the Pi (hostname/IP). |
 | High tick-overrun warnings in logs | Too many/too heavy pipelines for the hardware (see NFR-PERF-3/4 budgets per Pi model); or a board's serial link is intermittently stalling and blocking writes past their ack timeout. | Check how many pipelines/nodes are enabled against the budget for your Pi model in [02-requirements.md](./02-requirements.md#performance-nfr-perf-). Check for a specific slow/flaky board correlating with the overruns in the logs. Consider raising the affected pipeline's tick period (10-1000ms range, NFR-PERF-1) if sub-20ms responsiveness isn't actually needed for it. |
+| Values frozen, board says `connected`, TX blinks but nothing comes back | A device on the board (typically a servo or relay) is drawing more current than the USB rail can supply, browning the board out mid-boot after a reset — see [05-serial-protocol.md#liveness](./05-serial-protocol.md#liveness) and its reboot-loop guard. `journalctl -u pinctl \| grep -i reboot` shows repeated "board rebooted" lines, possibly followed by a "reboot loop detected" line and the board moving to `error`. | Power the servo/relay from its own supply, not the board's 5V rail, with a common ground back to the board. Re-flashing or restarting pinctl won't fix a wiring problem; the guard is deliberately not retrying it for you. |
 
 ## Flashing StandardFirmata
 

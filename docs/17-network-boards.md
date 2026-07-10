@@ -112,6 +112,12 @@ exactly that message. The session therefore marks a heartbeat as outstanding
 and swallows the matching reply. Get this wrong and a quiet board reconfigures
 itself every few seconds, forever.
 
+A serial `Session` shares this exact mechanism (`Session.heartbeatLoop`,
+`heartbeatAwaiting`) rather than a parallel implementation — a serial board's
+read never times out on its own the way a TCP read deadline does, so there
+the same heartbeat also does the killing; see
+[05-serial-protocol.md](./05-serial-protocol.md)'s "Liveness" section.
+
 ## Latency and tick rate
 
 USB serial at 57600 baud has predictable sub-millisecond latency. WiFi has tens

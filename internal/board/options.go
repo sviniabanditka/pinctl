@@ -49,3 +49,15 @@ func WithReadTimeout(d time.Duration) Option {
 func WithKeepalive(d time.Duration) Option {
 	return func(s *Session) { s.keepalive = d }
 }
+
+// WithSilenceTimeout overrides how long a serial Session may go without a
+// successful read before its silence watchdog (docs/05-serial-protocol.md
+// "Liveness") heartbeats it, and — if that heartbeat goes unanswered —
+// declares it unresponsive and marks the session dead. No effect on a
+// network address (a network Session's liveness is the read deadline set
+// via WithReadTimeout instead). Default 10s. 0 disables the watchdog
+// entirely: for boards that legitimately never speak on their own, at the
+// cost of pinctl being unable to tell a silent board from a dead one.
+func WithSilenceTimeout(d time.Duration) Option {
+	return func(s *Session) { s.silenceTimeout = d }
+}

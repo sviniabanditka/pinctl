@@ -43,6 +43,28 @@ type HTTPConfig struct {
 type SerialConfig struct {
 	Allowlist []string `yaml:"allowlist"`
 	Baud      int      `yaml:"baud"`
+	// SilenceTimeout is how long a serial board may go without a
+	// successful read before pinctl's silence watchdog
+	// (docs/05-serial-protocol.md "Liveness") heartbeats it, and — if that
+	// heartbeat goes unanswered — declares it unresponsive and reconnects
+	// (which resets an Uno via DTR, the cure for a brownout-hung board).
+	// Default 10s, minimum 2s. Zero disables the watchdog entirely: for
+	// boards that legitimately never speak on their own, at the cost of
+	// pinctl being unable to tell a silent board from a dead one.
+	SilenceTimeout Duration `yaml:"silence_timeout"`
+}
+
+// validate checks SerialConfig's fields: silence_timeout must be either
+// exactly 0 (the documented "disabled" value) or at least 2s.
+func (s SerialConfig) validate() error {
+	d := time.Duration(s.SilenceTimeout)
+	if d < 0 {
+		return fmt.Errorf("config: serial: silence_timeout must be >= 0")
+	}
+	if d != 0 && d < 2*time.Second {
+		return fmt.Errorf("config: serial: silence_timeout must be 0 (disabled) or >= 2s")
+	}
+	return nil
 }
 
 // LogConfig is config.yaml's log: section. Only Level is currently
@@ -307,7 +329,7 @@ func Default() Config {
 	return Config{
 		HTTP:    HTTPConfig{Addr: ":8080"},
 		DataDir: defaultDataDir(),
-		Serial:  SerialConfig{Allowlist: defaultSerialAllowlist(), Baud: 57600},
+		Serial:  SerialConfig{Allowlist: defaultSerialAllowlist(), Baud: 57600, SilenceTimeout: Duration(10 * time.Second)},
 		Network: defaultNetwork(),
 		Log:     LogConfig{Level: "info", Format: "text"},
 		MQTT:    defaultMQTT(),
@@ -444,6 +466,9 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	if err := cfg.Network.validate(); err != nil {
+		return Config{}, err
+	}
+	if err := cfg.Serial.validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

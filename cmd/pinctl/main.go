@@ -140,7 +140,7 @@ func main() {
 
 	if *port != "" {
 		log.Printf("pinctl: dev mode: opening board on %s (bypassing discovery)", *port)
-		realSess, err := board.Open(*port)
+		realSess, err := board.Open(*port, board.WithSilenceTimeout(time.Duration(cfg.Serial.SilenceTimeout)))
 		if err != nil {
 			log.Fatalf("pinctl: opening board: %v", err)
 		}
@@ -168,13 +168,14 @@ func main() {
 	} else {
 		log.Printf("pinctl: multi-board mode: serial allowlist %v, network boards %v", cfg.Serial.Allowlist, cfg.Network.Boards)
 		boardMgr = board.NewManager(board.ManagerConfig{
-			Allowlist:          cfg.Serial.Allowlist,
-			NetworkBoards:      cfg.Network.Boards,
-			NetworkDialTimeout: time.Duration(cfg.Network.DialTimeout),
-			NetworkReadTimeout: time.Duration(cfg.Network.ReadTimeout),
-			NetworkKeepalive:   time.Duration(cfg.Network.Keepalive),
-			Store:              st,
-			OnReady:            onReady,
+			Allowlist:            cfg.Serial.Allowlist,
+			NetworkBoards:        cfg.Network.Boards,
+			NetworkDialTimeout:   time.Duration(cfg.Network.DialTimeout),
+			NetworkReadTimeout:   time.Duration(cfg.Network.ReadTimeout),
+			NetworkKeepalive:     time.Duration(cfg.Network.Keepalive),
+			SerialSilenceTimeout: time.Duration(cfg.Serial.SilenceTimeout),
+			Store:                st,
+			OnReady:              onReady,
 		})
 		io = boardio.NewManagerIO(boardMgr)
 		sess = board.NewAnyConnectedSession(boardMgr)
