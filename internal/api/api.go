@@ -95,6 +95,11 @@ func writeBoardError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "unsupported_mode", err.Error())
 	case errors.Is(err, board.ErrSessionDead):
 		writeError(w, http.StatusServiceUnavailable, "session_dead", err.Error())
+	case errors.Is(err, board.ErrBoardOffline):
+		// The board being away is an ordinary, expected state — the client
+		// should retry, not report a bug. It reached the default branch and
+		// surfaced as internal_error until a servo browned out its USB port.
+		writeError(w, http.StatusServiceUnavailable, "board_offline", err.Error())
 	case errors.Is(err, board.ErrNoCachedValue):
 		writeError(w, http.StatusNotFound, "no_cached_value", err.Error())
 	default:

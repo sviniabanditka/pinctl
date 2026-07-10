@@ -80,6 +80,7 @@ inside a pipeline body.
   | `unknown_pin` | `404` | v0.1 pin endpoints: pin has no analog channel (`?analog=true`), or `board.ErrUnknownPin`. |
   | `unsupported_mode` | `409` | v0.1 `SetPinMode` with a mode the pin doesn't support (`board.ErrUnsupportedMode`). |
   | `session_dead` | `503` | v0.1 endpoints called against a session that's no longer alive (`board.ErrSessionDead`). |
+  | `board_offline` | `503` | A write or read reached a device whose board has no live session — an ordinary state (unplugged, rebooting, out of WiFi range), not a failure of pinctl. Retry. |
   | `no_cached_value` | `404` | v0.1 read endpoints before any value has been cached for the pin (`board.ErrNoCachedValue`). |
   | `internal_error` | `500` | Unexpected runtime fault (unmapped store/board error). |
 

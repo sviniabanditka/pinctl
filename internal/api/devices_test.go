@@ -2,8 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/sviniabanditka/pinctl/internal/board"
 
 	"github.com/sviniabanditka/pinctl/internal/engine"
 	"github.com/sviniabanditka/pinctl/internal/model"
@@ -475,4 +478,43 @@ func TestCreateDevice_EmptyBoardID_AmbiguousWithTwoBoards(t *testing.T) {
 	if er := decodeError(t, rec); er.Error.Code != "unknown_board" {
 		t.Errorf("error code = %q, want unknown_board", er.Error.Code)
 	}
+}
+
+// TestWriteDevice_BoardOffline: a board that is away is an expected state,
+// not an internal error. Discovered when a servo browned out its board's USB
+// port mid-test and the manual write reported internal_error.
+func TestWriteDevice_BoardOffline(t *testing.T) {
+	srv, boards := newTestServerWithBoards(t, "Uno")
+	rec := doRequest(t, srv, http.MethodPost, "/api/v1/devices", map[string]any{
+		"name": "LED", "boardId": boards[0].ID, "pin": 13, "role": "digital-out",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var d model.Device
+	if err := json.Unmarshal(rec.Body.Bytes(), &d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	srv.io = offlineDeviceIO{}
+
+	rec = doRequest(t, srv, http.MethodPost, "/api/v1/devices/"+d.ID+"/write", map[string]any{"value": true})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+	if er := decodeError(t, rec); er.Error.Code != "board_offline" {
+		t.Errorf("error code = %q, want board_offline", er.Error.Code)
+	}
+}
+
+// offlineDeviceIO fails every call the way boardio does when the device's
+// board has no live session.
+type offlineDeviceIO struct{}
+
+func (offlineDeviceIO) ReadDevice(model.Device) (engine.Value, error) {
+	return engine.Value{}, fmt.Errorf("boardio: %w", board.ErrBoardOffline)
+}
+
+func (offlineDeviceIO) WriteDevice(model.Device, engine.Value) error {
+	return fmt.Errorf("boardio: %w", board.ErrBoardOffline)
 }
