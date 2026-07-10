@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/sviniabanditka/pinctl/internal/board"
 	"github.com/sviniabanditka/pinctl/internal/engine"
 	"github.com/sviniabanditka/pinctl/internal/model"
 )
@@ -185,5 +186,34 @@ func TestApplySafeValues_CollectsErrorsButContinues(t *testing.T) {
 	// The PWM device (no analogWrErr set) must still have been attempted.
 	if sess.lastPWM != 10 {
 		t.Errorf("lastPWM = %d, want 10 (pwm write should still have been attempted)", sess.lastPWM)
+	}
+}
+
+// TestMultiIO_OfflineBoardIsUnreachable pins the production path: MultiIO is
+// what every multi-board deployment uses, and a board with no live session
+// must reach the engine as engine.ErrDeviceUnreachable so the pipeline pauses
+// rather than counting logic failures and auto-disabling itself.
+//
+// The per-session IO already mapped this. MultiIO's own lookup failure did
+// not, and no test noticed: TestMultiIO_UnknownBoardErrors asserted only that
+// *an* error came back.
+func TestMultiIO_OfflineBoardIsUnreachable(t *testing.T) {
+	io := NewMulti(func(string) (Session, error) { return nil, board.ErrBoardOffline })
+	in := model.Device{ID: "dev_x", BoardID: "brd_gone", Pin: 14, Role: model.RoleAnalogIn}
+	out := model.Device{ID: "dev_y", BoardID: "brd_gone", Pin: 13, Role: model.RoleDigitalOut}
+
+	_, readErr := io.ReadDevice(in)
+	writeErr := io.WriteDevice(out, engine.BoolValue(true))
+
+	for name, err := range map[string]error{"ReadDevice": readErr, "WriteDevice": writeErr} {
+		if err == nil {
+			t.Fatalf("%s: got nil error, want unreachable", name)
+		}
+		if !errors.Is(err, engine.ErrDeviceUnreachable) {
+			t.Errorf("%s: %v is not engine.ErrDeviceUnreachable", name, err)
+		}
+		if !errors.Is(err, board.ErrBoardOffline) {
+			t.Errorf("%s: %v lost the original board.ErrBoardOffline cause", name, err)
+		}
 	}
 }

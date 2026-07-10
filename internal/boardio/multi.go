@@ -41,10 +41,15 @@ func NewManagerIO(mgr *board.Manager) *MultiIO {
 	})
 }
 
+// A lookup failure means the device's board has no live session — the same
+// "hardware is away" condition the per-session IO reports, and it must reach
+// the engine as engine.ErrDeviceUnreachable so the pipeline pauses instead of
+// counting the tick as a logic failure. This is the multi-board path, i.e.
+// every production deployment.
 func (m *MultiIO) ReadDevice(d model.Device) (engine.Value, error) {
 	sess, err := m.lookup(d.BoardID)
 	if err != nil {
-		return engine.Value{}, fmt.Errorf("boardio: device %s: %w", d.ID, err)
+		return engine.Value{}, wrapUnreachable(d, err)
 	}
 	return New(sess).ReadDevice(d)
 }
@@ -52,7 +57,7 @@ func (m *MultiIO) ReadDevice(d model.Device) (engine.Value, error) {
 func (m *MultiIO) WriteDevice(d model.Device, v engine.Value) error {
 	sess, err := m.lookup(d.BoardID)
 	if err != nil {
-		return fmt.Errorf("boardio: device %s: %w", d.ID, err)
+		return wrapUnreachable(d, err)
 	}
 	return New(sess).WriteDevice(d, v)
 }

@@ -111,35 +111,42 @@ type pipelineSummary struct {
 	TickMs    int    `json:"tickMs"`
 	NodeCount int    `json:"nodeCount"`
 	Status    string `json:"status"`
+	Detail    string `json:"detail,omitempty"`
 }
 
-// pipelineStatus maps a pipeline's persisted enabled flag plus its
-// engine.Manager runtime Status to the docs/10-api.md status string.
-// Deviation: docs lists a "paused" status for "board offline", which is a
-// v0.4 concern (board disconnect/reconnect handling, docs/12-roadmap.md);
-// v0.2 only distinguishes stopped/running/error.
-func (s *Server) pipelineStatus(p model.Pipeline) string {
+// pipelineStatusDetail maps a pipeline's persisted enabled flag plus its
+// engine.Manager runtime Status to the docs/10-api.md status string, plus a
+// short human-readable detail — non-empty exactly when status is "paused",
+// carrying engine.Status.Detail (e.g. "device dev_9zq3v7ab4c is unreachable
+// (board brd_4kx8n2wq1r)").
+func (s *Server) pipelineStatusDetail(p model.Pipeline) (status, detail string) {
 	if !p.Enabled {
-		return "stopped"
+		return "stopped", ""
 	}
 	st, ok := s.mgr.Status(p.ID)
 	if !ok {
-		return "stopped"
+		return "stopped", ""
 	}
-	if st.State == engine.StateRunning {
-		return "running"
+	switch st.State {
+	case engine.StateRunning:
+		return "running", ""
+	case engine.StatePaused:
+		return "paused", st.Detail
+	default: // StateError or StateDisabled (auto-disabled after repeated tick failures)
+		return "error", ""
 	}
-	return "error" // StateError or StateDisabled (auto-disabled after repeated tick failures)
 }
 
 func (s *Server) summarize(p model.Pipeline) pipelineSummary {
+	status, detail := s.pipelineStatusDetail(p)
 	return pipelineSummary{
 		ID:        p.ID,
 		Name:      p.Name,
 		Enabled:   p.Enabled,
 		TickMs:    p.TickMs,
 		NodeCount: len(p.Nodes),
-		Status:    s.pipelineStatus(p),
+		Status:    status,
+		Detail:    detail,
 	}
 }
 
@@ -152,13 +159,25 @@ func (s *Server) handleListPipelines(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"pipelines": out})
 }
 
+// pipelineDetailResponse is the docs/10-api.md GET /pipelines/{id} shape:
+// the full persisted pipeline (nodes/edges included, unlike the list-view
+// pipelineSummary) plus the same runtime status/detail pipelineSummary
+// carries, so a client viewing one pipeline doesn't need a second request
+// against the list endpoint just to learn whether it's paused and why.
+type pipelineDetailResponse struct {
+	model.Pipeline
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
 func (s *Server) handleGetPipeline(w http.ResponseWriter, r *http.Request) {
 	p, err := s.store.GetPipeline(r.PathValue("id"))
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, p)
+	status, detail := s.pipelineStatusDetail(p)
+	writeJSON(w, http.StatusOK, pipelineDetailResponse{Pipeline: p, Status: status, Detail: detail})
 }
 
 // pipelineSaveResponse embeds the saved pipeline plus any non-fatal
@@ -203,7 +222,8 @@ func (s *Server) handleCreatePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.startOrStop(saved, devices)
-	s.publishPipelineStatus(saved.ID, s.pipelineStatus(saved))
+	status, detail := s.pipelineStatusDetail(saved)
+	s.publishPipelineStatus(saved.ID, status, detail)
 	writeJSON(w, http.StatusCreated, pipelineSaveResponse{Pipeline: saved, Warnings: toWarningsOut(warnings)})
 }
 
@@ -241,7 +261,8 @@ func (s *Server) handleUpdatePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.startOrStop(saved, devices)
-	s.publishPipelineStatus(saved.ID, s.pipelineStatus(saved))
+	status, detail := s.pipelineStatusDetail(saved)
+	s.publishPipelineStatus(saved.ID, status, detail)
 	writeJSON(w, http.StatusOK, pipelineSaveResponse{Pipeline: saved, Warnings: toWarningsOut(warnings)})
 }
 
@@ -255,7 +276,7 @@ func (s *Server) handleDeletePipeline(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	s.publishPipelineStatus(id, "stopped")
+	s.publishPipelineStatus(id, "stopped", "")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -289,8 +310,8 @@ func (s *Server) handleEnablePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.startOrStop(updated, devices)
-	status := s.pipelineStatus(updated)
-	s.publishPipelineStatus(updated.ID, status)
+	status, detail := s.pipelineStatusDetail(updated)
+	s.publishPipelineStatus(updated.ID, status, detail)
 	writeJSON(w, http.StatusOK, pipelineActionResponse{ID: updated.ID, Enabled: updated.Enabled, Status: status})
 }
 
@@ -302,8 +323,8 @@ func (s *Server) handleDisablePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mgr.Stop(id)
-	status := s.pipelineStatus(updated)
-	s.publishPipelineStatus(updated.ID, status)
+	status, detail := s.pipelineStatusDetail(updated)
+	s.publishPipelineStatus(updated.ID, status, detail)
 	writeJSON(w, http.StatusOK, pipelineActionResponse{ID: updated.ID, Enabled: updated.Enabled, Status: status})
 }
 

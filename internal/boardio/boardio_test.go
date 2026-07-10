@@ -246,6 +246,54 @@ func TestWriteDevice_PropagatesSessionError(t *testing.T) {
 	}
 }
 
+// TestReadWriteDevice_UnreachableMapping covers the three transport-level
+// conditions that mean "the hardware behind this device could not be
+// reached right now" — board.ErrBoardOffline, board.ErrSessionDead,
+// board.ErrNoCachedValue — for both ReadDevice and WriteDevice: each must
+// map onto engine.ErrDeviceUnreachable (so the engine can tell "pause, not
+// logic error" apart from any other error) while errors.Is still finds the
+// original board-layer error too, per docs/07-pipeline-engine.md "Degraded
+// ticks".
+func TestReadWriteDevice_UnreachableMapping(t *testing.T) {
+	boardErrs := []error{board.ErrBoardOffline, board.ErrSessionDead, board.ErrNoCachedValue}
+
+	for _, boardErr := range boardErrs {
+		t.Run("read/"+boardErr.Error(), func(t *testing.T) {
+			sess := newFakeSession()
+			sess.digitalRdErr = boardErr
+			io := New(sess)
+
+			_, err := io.ReadDevice(model.Device{ID: "btn", BoardID: "brd_1", Pin: 14, Role: model.RoleDigitalIn})
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !errors.Is(err, engine.ErrDeviceUnreachable) {
+				t.Errorf("err = %v, want errors.Is engine.ErrDeviceUnreachable", err)
+			}
+			if !errors.Is(err, boardErr) {
+				t.Errorf("err = %v, want errors.Is %v", err, boardErr)
+			}
+		})
+
+		t.Run("write/"+boardErr.Error(), func(t *testing.T) {
+			sess := newFakeSession()
+			sess.digitalWrErr = boardErr
+			io := New(sess)
+
+			err := io.WriteDevice(model.Device{ID: "led", BoardID: "brd_1", Pin: 13, Role: model.RoleDigitalOut}, engine.BoolValue(true))
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !errors.Is(err, engine.ErrDeviceUnreachable) {
+				t.Errorf("err = %v, want errors.Is engine.ErrDeviceUnreachable", err)
+			}
+			if !errors.Is(err, boardErr) {
+				t.Errorf("err = %v, want errors.Is %v", err, boardErr)
+			}
+		})
+	}
+}
+
 func TestApplyPinModes(t *testing.T) {
 	sess := newFakeSession()
 	devices := []model.Device{

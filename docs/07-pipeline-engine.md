@@ -22,6 +22,7 @@ defined here).
 - [Validation](#validation)
 - [Hot-reload](#hot-reload)
 - [Runtime error handling](#runtime-error-handling)
+- [Degraded ticks](#degraded-ticks)
 - [Debug and observability hooks](#debug-and-observability-hooks)
 - [Determinism and testing hooks](#determinism-and-testing-hooks)
 - [One tick, in full](#one-tick-in-full)
@@ -438,27 +439,10 @@ disable the pipeline after 3 consecutive failed ticks.**
 
 - Per [03-architecture.md](./03-architecture.md)'s failure modes, a
   disconnected board does not stop the affected pipeline's scheduler — the
-  pipeline keeps ticking, but `Session.PinState`/writes return
-  `ErrBoardOffline` for that board's pins.
-- **`device-read`** nodes hold their **last known value** (the node
-  catalog's documented policy) rather than emitting a false `0`/`false`
-  reading; the `TickSnapshot` marks the affected node's value as stale so
-  the UI can distinguish "genuinely still this value" from "frozen because
-  the board is gone."
-- **`device-write`** nodes: the write for that tick is **dropped**, not
-  queued or retried (also the node catalog's documented policy) — the
-  engine does not attempt to buffer writes for a reconnecting board. What
-  the physical device itself does while disconnected (hold last actuated
-  state vs. some board-level fail-safe) is a property of the board/device,
-  not the engine, and is out of scope here — see
-  [09-data-model.md](./09-data-model.md) for any device-level
-  "on-disconnect" behavior configuration.
-- This does **not** count toward the node-evaluation-error consecutive
-  failure counter above — a stale read or a dropped write is a degraded-
-  but-successful tick (the node's `Eval` returns a value, just a stale
-  one), not an evaluation error. The pipeline is instead flagged `degraded`
-  in `Status`/`TickSnapshot`, distinct from the `error` state used for node
-  eval failures.
+  pipeline keeps ticking, but reads/writes against that board's pins fail
+  with `engine.ErrDeviceUnreachable`, handled as a *degraded tick* — see
+  [Degraded ticks](#degraded-ticks) below for exactly what that means for
+  reads, writes, and `Status`.
 - On board reconnect, the next tick automatically resumes normal reads and
   writes — no manual re-enable, per
   [03-architecture.md](./03-architecture.md).
@@ -472,6 +456,70 @@ disable the pipeline after 3 consecutive failed ticks.**
   needing to know about the reconnect itself. See the `onDisconnect`/
   `safeValue` device options in
   [09-data-model.md](./09-data-model.md#device-object).
+
+## Degraded ticks
+
+**Hardware being unreachable is a pause, not a logic error.** Dividing by
+zero in an `expression` node is the pipeline's fault and disables it after
+3 consecutive failures, per [Runtime error handling](#runtime-error-handling)
+above. An unplugged board, a dead session, or a pin whose first Firmata
+report hasn't arrived yet is nobody's fault — the pipeline just can't do
+anything useful against that one device *right now*, and should say so
+without needing a human to re-enable it once the hardware comes back.
+
+### The three unreachable conditions
+
+`internal/boardio` maps all three onto a single sentinel,
+`engine.ErrDeviceUnreachable`, wrapping the original board-layer error with
+`%w` (so `errors.Is` still matches it too) inside an `*engine.
+UnreachableError{DeviceID, BoardID, Err}` — this is the one seam where
+`internal/engine`'s sentinel and `internal/board`'s concrete errors meet;
+`internal/engine` itself does not, and must not, import `internal/board`.
+
+| Condition | Meaning |
+|---|---|
+| `board.ErrBoardOffline` | The board isn't connected at all (unplugged, never opened). |
+| `board.ErrSessionDead` | The board *was* connected but its session's read/write loop detected it's gone (serial I/O error). |
+| `board.ErrNoCachedValue` | The board is connected and reporting, but this particular pin hasn't produced its first value yet — e.g. a pipeline enabled in the same instant its board finishes connecting. |
+
+### What happens to a degraded tick
+
+- **Reads.** If a `device-read` node's `Eval` returns an error satisfying
+  `errors.Is(err, engine.ErrDeviceUnreachable)`, the scheduler **skips
+  evaluation of the rest of that tick** — no further nodes run, and nothing
+  queued for a sink write so far is flushed. This is deliberately the same
+  "abandon the tick" shape as a genuine node evaluation error (see
+  [Runtime error handling](#runtime-error-handling)): it keeps a stale
+  upstream value from silently propagating into downstream nodes or
+  half-computed writes reaching a device. The difference is purely in how
+  it's *classified* — see Status, below — not in what evaluation does.
+- **Writes.** A `device-write` node's sink flush is handled differently:
+  each queued write is attempted independently, so one unreachable target
+  device only drops *that* write — a sibling `device-write` to a *different*,
+  still-reachable device in the same tick still lands. A device being away
+  must not stop a write to a device that's still there. The dropped write's
+  device is not written to `lastWritten` (the dedup cache), so the next
+  tick's flush retries it exactly as if nothing had changed. A write error
+  that is *not* `ErrDeviceUnreachable` is treated as a genuine tick failure
+  instead (same as a node eval error) — `internal/boardio` maps every
+  realistic transport failure to `ErrDeviceUnreachable`, so this path is
+  defensive, not expected to fire in practice.
+- **Counters.** A degraded tick does **not** increment the
+  consecutive-failure counter and can never auto-disable the pipeline, no
+  matter how many consecutive ticks stay degraded — see
+  [Runtime error handling](#runtime-error-handling)'s 3-strikes policy,
+  which this deliberately does not interact with in either direction (a run
+  of degraded ticks doesn't reset an in-progress genuine-failure streak
+  either). Every dropped write, though, does increment a cumulative
+  `Status.DroppedWrites` counter (same "never reset, whole-runner-lifetime"
+  shape as `OverrunCount`).
+- **Status.** `Status.State` becomes `StatePaused` (`"paused"` over the
+  API), and `Status.Detail` is set to a short, human-readable reason naming
+  the offending device and its board, e.g. `"device dev_9zq3v7ab4c is
+  unreachable (board brd_4kx8n2wq1r)"`. A tick that completes with **no**
+  unreachability and **no** error returns `Status.State` to `StateRunning`
+  and clears `Detail` back to `""` — recovery is automatic, the very next
+  clean tick, no manual re-enable.
 
 ## Debug and observability hooks
 
@@ -565,8 +613,10 @@ the engine deterministically without real hardware or real time:
    │     in  := outputs of upstream nodes (already computed)        │
    │     out, err := node.Eval(ctx, in)                              │
    │     record out into this tick's TickSnapshot                  │
-   │     if err != nil → abandon tick for this pipeline (see         │
-   │        Runtime error handling); do not flush partial writes    │
+   │     if err != nil → abandon tick for this pipeline; do not      │
+   │        flush partial writes. ErrDeviceUnreachable → degraded    │
+   │        (see Degraded ticks); anything else → failed (see        │
+   │        Runtime error handling)                                 │
    │     if node is device-write → queue (pin, value) write intent  │
    └───────────────────────────────────────────────────────────────┘
                                   │
@@ -578,7 +628,8 @@ the engine deterministically without real hardware or real time:
    │   for each surviving write intent:                             │
    │     board.Session.DigitalWrite/PWMWrite(pin, value)  [fire-    │
    │       and-forget, bounded ack timeout, does not block tick]    │
-   │   if device unreachable → drop write, mark pipeline degraded   │
+   │   if device unreachable → drop just that write, keep flushing  │
+   │     the rest, mark pipeline paused (see Degraded ticks)        │
    └───────────────────────────────────────────────────────────────┘
                                   │
                                   ▼

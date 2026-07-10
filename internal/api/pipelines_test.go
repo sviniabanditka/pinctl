@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -8,6 +9,11 @@ import (
 	"github.com/sviniabanditka/pinctl/internal/engine"
 	"github.com/sviniabanditka/pinctl/internal/model"
 )
+
+// errUnreachableFake stands in for a board.Err* cause, same rationale as
+// internal/engine's own degraded_test.go: these tests only need something
+// that engine.UnreachableError can wrap, not a real internal/board error.
+var errUnreachableFake = errors.New("fake board: unreachable")
 
 func createTestDevice(t *testing.T, h http.Handler, name string, pin int, role string) model.Device {
 	t.Helper()
@@ -403,5 +409,84 @@ func TestEndToEnd_LDRTurnsOnLEDViaREST(t *testing.T) {
 	}
 	if v, ok := io.LastWrite(led.ID); !ok || v.Bool != true {
 		t.Fatalf("tick 2 (dark): led write = %+v, ok=%v, want true", v, ok)
+	}
+}
+
+// TestPipelineStatus_PausedSerializesWithDetail covers docs/10-api.md's
+// "paused" status (board offline): once a pipeline's device-read hits
+// engine.ErrDeviceUnreachable, both the list view (GET /pipelines) and the
+// single-pipeline view (GET /pipelines/{id}) must serialize
+// status:"paused" with a non-empty detail explaining why — not the old
+// "error" catch-all docs/10-api.md's deviation comment used to fall back
+// to.
+func TestPipelineStatus_PausedSerializesWithDetail(t *testing.T) {
+	st := newTestStore(t)
+	fs := newFakeSession()
+	io := newFakeDeviceIO()
+	clk := newFakeClock()
+	tf, tickers := manualTickerFactory()
+	mgr := engine.NewManager(engine.WithClock(clk), engine.WithTickerFactory(tf))
+	t.Cleanup(mgr.StopAll)
+	h := NewServer(fs, "/dev/ttyACM0", st, mgr, io)
+
+	ldr := createTestDevice(t, h, "LDR", 14, "analog-in")
+	led := createTestDevice(t, h, "LED", 13, "digital-out")
+	io.SetReadErr(ldr.ID, &engine.UnreachableError{DeviceID: ldr.ID, BoardID: ldr.BoardID, Err: errUnreachableFake})
+
+	rec := doRequest(t, h, http.MethodPost, "/api/v1/pipelines", ldrLedPipelineBody("paused-pipeline", ldr.ID, led.ID))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create pipeline: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var created model.Pipeline
+	mustDecode(t, rec, &created)
+
+	rec = doRequest(t, h, http.MethodPost, "/api/v1/pipelines/"+created.ID+"/enable", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable pipeline: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	mt := <-tickers
+	mt.Fire(time.Unix(1, 0))
+	if _, ok := waitForTick(mgr, created.ID, 1, 2*time.Second); !ok {
+		t.Fatal("pipeline did not reach tick 1")
+	}
+
+	// GET /pipelines (list/summary view).
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/pipelines", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list pipelines: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var listResp struct {
+		Pipelines []pipelineSummary `json:"pipelines"`
+	}
+	mustDecode(t, rec, &listResp)
+	var summary *pipelineSummary
+	for i := range listResp.Pipelines {
+		if listResp.Pipelines[i].ID == created.ID {
+			summary = &listResp.Pipelines[i]
+		}
+	}
+	if summary == nil {
+		t.Fatalf("pipeline %s not found in list response: %+v", created.ID, listResp.Pipelines)
+	}
+	if summary.Status != "paused" {
+		t.Errorf("list: status = %q, want %q", summary.Status, "paused")
+	}
+	if summary.Detail == "" {
+		t.Error("list: detail is empty, want a non-empty reason")
+	}
+
+	// GET /pipelines/{id} (single/detail view).
+	rec = doRequest(t, h, http.MethodGet, "/api/v1/pipelines/"+created.ID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get pipeline: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var detail pipelineDetailResponse
+	mustDecode(t, rec, &detail)
+	if detail.Status != "paused" {
+		t.Errorf("detail: status = %q, want %q", detail.Status, "paused")
+	}
+	if detail.Detail == "" {
+		t.Error("detail: detail field is empty, want a non-empty reason")
 	}
 }

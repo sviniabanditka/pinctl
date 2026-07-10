@@ -57,12 +57,14 @@ type pipelineEvent struct {
 	Detail     string `json:"detail,omitempty"`
 }
 
-// publishPipelineStatus broadcasts id's current status on the "pipelines"
-// topic. Called both directly from the enable/disable/create/update/delete
+// publishPipelineStatus broadcasts id's current status (and, for a paused
+// pipeline, why — see engine.Status.Detail) on the "pipelines" topic.
+// Called both directly from the enable/disable/create/update/delete
 // handlers (immediate) and from runPipelineStatusPoller (catches
-// engine-internal transitions).
-func (s *Server) publishPipelineStatus(id, status string) {
-	s.hub.broadcast(topicPipelines, pipelineEvent{PipelineID: id, Status: status})
+// engine-internal transitions, e.g. auto-disable or a board going/coming
+// back online).
+func (s *Server) publishPipelineStatus(id, status, detail string) {
+	s.hub.broadcast(topicPipelines, pipelineEvent{PipelineID: id, Status: status, Detail: detail})
 }
 
 // StartPublishers launches the background goroutines driving the boards/
@@ -189,29 +191,41 @@ func (s *Server) runBoardPoll(ctx context.Context) {
 	}
 }
 
-// runPipelineStatusPoller re-derives every pipeline's status (the same
-// s.pipelineStatus REST responses use) at pipelineStatusPollInterval and
-// broadcasts on "pipelines" whenever it differs from the last known value —
-// this is what surfaces an engine-internal auto-disable (three consecutive
-// failed ticks, docs/07-pipeline-engine.md) to WS clients even though no
-// REST call caused it.
+// pipelineStatusDetailKey identifies a (status, detail) pair for
+// runPipelineStatusPoller's last-seen tracking — a pipeline going from one
+// unreachable device to a different one is still worth re-publishing even
+// though status stays "paused" the whole time.
+type pipelineStatusDetailKey struct {
+	status string
+	detail string
+}
+
+// runPipelineStatusPoller re-derives every pipeline's status+detail (the
+// same s.pipelineStatusDetail REST responses use) at
+// pipelineStatusPollInterval and broadcasts on "pipelines" whenever either
+// differs from the last known value — this is what surfaces an
+// engine-internal state transition (auto-disable after three consecutive
+// failed ticks, or a pause/resume as a board goes offline/comes back,
+// docs/07-pipeline-engine.md) to WS clients even though no REST call caused
+// it.
 func (s *Server) runPipelineStatusPoller(ctx context.Context) {
 	ticker := time.NewTicker(pipelineStatusPollInterval)
 	defer ticker.Stop()
 
-	last := make(map[string]string)
+	last := make(map[string]pipelineStatusDetailKey)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			for _, p := range s.store.ListPipelines() {
-				status := s.pipelineStatus(p)
-				if last[p.ID] == status {
+				status, detail := s.pipelineStatusDetail(p)
+				key := pipelineStatusDetailKey{status: status, detail: detail}
+				if last[p.ID] == key {
 					continue
 				}
-				last[p.ID] = status
-				s.publishPipelineStatus(p.ID, status)
+				last[p.ID] = key
+				s.publishPipelineStatus(p.ID, status, detail)
 			}
 		}
 	}

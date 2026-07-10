@@ -63,13 +63,13 @@ func (io *IO) ReadDevice(d model.Device) (engine.Value, error) {
 		}
 		v, err := io.sess.AnalogRead(ch)
 		if err != nil {
-			return engine.Value{}, err
+			return engine.Value{}, wrapUnreachable(d, err)
 		}
 		return engine.FloatValue(float64(v)), nil
 	case model.RoleDigitalIn:
 		v, err := io.sess.DigitalRead(d.Pin)
 		if err != nil {
-			return engine.Value{}, err
+			return engine.Value{}, wrapUnreachable(d, err)
 		}
 		return engine.BoolValue(v), nil
 	default:
@@ -80,13 +80,15 @@ func (io *IO) ReadDevice(d model.Device) (engine.Value, error) {
 // WriteDevice implements engine.DeviceIO. digital-out writes a bool;
 // pwm-out clamps v.Float to 0-255 (belt-and-suspenders — device-write
 // already clamps per docs/08-node-catalog.md, but boardio doesn't assume
-// its only caller does) and writes a byte duty cycle. A write error (e.g.
-// a dead session) is passed straight through — the engine's runner already
-// treats a WriteDevice error as a dropped write, not a fatal tick error.
+// its only caller does) and writes a byte duty cycle. A transport-level
+// write error (dead session, offline board) is mapped to
+// engine.ErrDeviceUnreachable — the engine's runner treats that as a
+// dropped write on a degraded tick, not a fatal tick error (docs/07-
+// pipeline-engine.md "Degraded ticks").
 func (io *IO) WriteDevice(d model.Device, v engine.Value) error {
 	switch d.Role {
 	case model.RoleDigitalOut:
-		return io.sess.DigitalWrite(d.Pin, v.Bool)
+		return wrapUnreachable(d, io.sess.DigitalWrite(d.Pin, v.Bool))
 	case model.RolePWMOut:
 		f := v.Float
 		if f < 0 {
@@ -95,7 +97,7 @@ func (io *IO) WriteDevice(d model.Device, v engine.Value) error {
 		if f > 255 {
 			f = 255
 		}
-		return io.sess.AnalogWrite(d.Pin, byte(f))
+		return wrapUnreachable(d, io.sess.AnalogWrite(d.Pin, byte(f)))
 	case model.RoleServo:
 		f := v.Float
 		if f < 0 {
@@ -104,9 +106,32 @@ func (io *IO) WriteDevice(d model.Device, v engine.Value) error {
 		if f > 180 {
 			f = 180
 		}
-		return io.sess.ServoWrite(d.Pin, int(math.Round(f)))
+		return wrapUnreachable(d, io.sess.ServoWrite(d.Pin, int(math.Round(f))))
 	default:
 		return fmt.Errorf("boardio: device %s: role %q is not writable", d.ID, d.Role)
+	}
+}
+
+// wrapUnreachable maps the transport-level conditions that mean "the
+// hardware behind d could not be reached right now" — board.ErrBoardOffline,
+// board.ErrSessionDead, board.ErrNoCachedValue — onto an
+// *engine.UnreachableError, which carries d's ID and board ID and, via its
+// Unwrap, still matches errors.Is(err, engine.ErrDeviceUnreachable) as well
+// as errors.Is(err, <the original board.Err*>). This is the only place
+// internal/engine's sentinel and internal/board's concrete errors meet; the
+// engine package itself must not import internal/board (see engine.
+// ErrDeviceUnreachable's doc comment), so this mapping has to live here in
+// boardio. Any other error (a programming error like an unsupported role)
+// passes through unchanged. A nil err passes through as nil.
+func wrapUnreachable(d model.Device, err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, board.ErrBoardOffline), errors.Is(err, board.ErrSessionDead), errors.Is(err, board.ErrNoCachedValue):
+		return &engine.UnreachableError{DeviceID: d.ID, BoardID: d.BoardID, Err: err}
+	default:
+		return err
 	}
 }
 

@@ -50,6 +50,7 @@ type fakeIO struct {
 	mu         sync.Mutex
 	reads      map[string]Value
 	readErr    map[string]error
+	writeErr   map[string]error
 	writes     map[string]Value
 	writeCount map[string]int
 }
@@ -58,6 +59,7 @@ func newFakeIO() *fakeIO {
 	return &fakeIO{
 		reads:      map[string]Value{},
 		readErr:    map[string]error{},
+		writeErr:   map[string]error{},
 		writes:     map[string]Value{},
 		writeCount: map[string]int{},
 	}
@@ -75,6 +77,19 @@ func (f *fakeIO) SetReadErr(deviceID string, err error) {
 	f.readErr[deviceID] = err
 }
 
+// SetWriteErr makes the next (and every subsequent, until cleared) call to
+// WriteDevice(deviceID, ...) fail with err instead of recording the write.
+// Pass a nil err to clear it (simulates the device coming back).
+func (f *fakeIO) SetWriteErr(deviceID string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err == nil {
+		delete(f.writeErr, deviceID)
+		return
+	}
+	f.writeErr[deviceID] = err
+}
+
 func (f *fakeIO) ReadDevice(d model.Device) (Value, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -87,6 +102,9 @@ func (f *fakeIO) ReadDevice(d model.Device) (Value, error) {
 func (f *fakeIO) WriteDevice(d model.Device, v Value) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.writeErr[d.ID]; err != nil {
+		return err
+	}
 	f.writes[d.ID] = v
 	f.writeCount[d.ID]++
 	return nil

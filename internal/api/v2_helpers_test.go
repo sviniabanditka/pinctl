@@ -27,6 +27,7 @@ func mustDecode(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 type fakeDeviceIO struct {
 	mu         sync.Mutex
 	reads      map[string]engine.Value
+	readErr    map[string]error
 	writes     map[string]engine.Value
 	writeCount map[string]int
 }
@@ -34,6 +35,7 @@ type fakeDeviceIO struct {
 func newFakeDeviceIO() *fakeDeviceIO {
 	return &fakeDeviceIO{
 		reads:      map[string]engine.Value{},
+		readErr:    map[string]error{},
 		writes:     map[string]engine.Value{},
 		writeCount: map[string]int{},
 	}
@@ -45,9 +47,26 @@ func (f *fakeDeviceIO) SetRead(deviceID string, v engine.Value) {
 	f.reads[deviceID] = v
 }
 
+// SetReadErr makes the next (and every subsequent, until cleared with a nil
+// err) call to ReadDevice(deviceID) fail with err instead of returning a
+// value — used to simulate an unreachable device (engine.ErrDeviceUnreachable)
+// for the "paused" pipeline status tests.
+func (f *fakeDeviceIO) SetReadErr(deviceID string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err == nil {
+		delete(f.readErr, deviceID)
+		return
+	}
+	f.readErr[deviceID] = err
+}
+
 func (f *fakeDeviceIO) ReadDevice(d model.Device) (engine.Value, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.readErr[d.ID]; err != nil {
+		return engine.Value{}, err
+	}
 	return f.reads[d.ID], nil
 }
 

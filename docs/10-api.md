@@ -302,6 +302,15 @@ list view light):
       "tickMs": 20,
       "nodeCount": 3,
       "status": "running"
+    },
+    {
+      "id": "pl_bfwwa7s6qf",
+      "name": "Garage door sensor",
+      "enabled": true,
+      "tickMs": 20,
+      "nodeCount": 2,
+      "status": "paused",
+      "detail": "device dev_9zq3v7ab4c is unreachable (board brd_4kx8n2wq1r)"
     }
   ]
 }
@@ -309,7 +318,18 @@ list view light):
 
 `status` here is runtime, from `Engine.Status` (see
 [03-architecture.md](./03-architecture.md#internalengine)): one of
-`running`, `paused` (board offline), `error`, or `stopped` (disabled).
+`running`, `paused` (board offline, session dead, or a pin with no cached
+value yet — [07-pipeline-engine.md](./07-pipeline-engine.md#degraded-ticks)),
+`error` (a node evaluation error, including auto-disabled after 3
+consecutive failures), or `stopped` (disabled). `detail` is present exactly
+when `status` is `"paused"`, naming the offending device and its board;
+omitted (not an empty string) otherwise.
+
+`GET /api/v1/pipelines/{id}` returns the same `status`/`detail` fields
+alongside the full persisted pipeline (`name`, `tickMs`, `nodes`, `edges`,
+...) — a client already looking at one pipeline doesn't need a second
+request against the list endpoint just to learn whether it's paused and
+why.
 
 `POST /api/v1/pipelines/validate` — dry-run: runs exactly the validation
 `SavePipeline` would run (schema, DAG, referential integrity — see
@@ -457,6 +477,22 @@ Server pushes a board disconnect:
   "type": "event",
   "topic": "boards",
   "data": { "boardId": "brd_9zq3v7ab4c", "status": "disconnected", "port": null }
+}
+```
+
+Server pushes a pipeline going `paused` because a device it reads/writes
+went unreachable (same shape the REST list/detail responses carry, see
+[07-pipeline-engine.md](./07-pipeline-engine.md#degraded-ticks)):
+
+```json
+{
+  "type": "event",
+  "topic": "pipelines",
+  "data": {
+    "pipelineId": "pl_bfwwa7s6qf",
+    "status": "paused",
+    "detail": "device dev_9zq3v7ab4c is unreachable (board brd_4kx8n2wq1r)"
+  }
 }
 ```
 
